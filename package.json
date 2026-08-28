@@ -1,0 +1,17 @@
+{
+  "name": "pr-review-studio",
+  "private": true,
+  "version": "0.0.0",
+  "workspaces": [
+    "client"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,client -c blue,green \"npm run dev:server\" \"npm run dev -w client\"",
+    "dev:server": "server\\.venv\\Scripts\\uvicorn.exe app.main:app --port 3011 --app-dir server",
+    "dev:client": "npm run dev -w client",
+    "build": "npm run build -w client"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}

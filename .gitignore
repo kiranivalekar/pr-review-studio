@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+.idea
+.vscode
+data/db.json
+data/worktrees/
