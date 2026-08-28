@@ -382,7 +382,7 @@ export function Review() {
                   }
                   className="text-xs text-zinc-400 dark:text-zinc-500"
                 >
-                  ${usage.costUsd.toFixed(3)} · {formatTokenCount(totalTokens(usage))} tokens
+                {formatTokenCount(totalTokens(usage))} tokens
                 </span>
               );
             })()}

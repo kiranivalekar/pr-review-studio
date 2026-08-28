@@ -34,7 +34,7 @@ function UsageSummary() {
     >
       <Coins size={14} strokeWidth={2} className="shrink-0" />
       <span>
-        ${usage.costUsd.toFixed(2)} · {formatTokenCount(totalTokens(usage))} tokens
+        {formatTokenCount(totalTokens(usage))} tokens
       </span>
     </div>
   );
