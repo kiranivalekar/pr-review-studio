@@ -1,14 +1,31 @@
 import asyncio
 import json
+import logging
 import re
 import subprocess
-from pathlib import Path
 from typing import Any
 
 from app.concurrency import map_with_concurrency
 from app.config import claude_cli_path
 
+logger = logging.getLogger(__name__)
+
 REVIEW_CONCURRENCY = 4
+
+# Deep (codebase-aware) mode lets Claude loop Read/Grep/Glob across several turns per
+# file — with no other cap, one file's exploration has run up to ~200K tokens (a real
+# review hit 165K cache-creation + 25K output + 9K cache-read tokens on a 5-file PR).
+# The claude CLI's headless -p mode has no direct max-turns/max-tokens knob, but it does
+# expose --max-budget-usd, a hard dollar ceiling it self-enforces mid-run. $0.05 is sized
+# against Sonnet 5 pricing ($2/$10 per MTok in/out, ~$2.50 cache-write, ~$0.20 cache-read)
+# using that same review's token mix (~83% cache-creation, ~13% output, ~4% cache-read)
+# scaled down to ~10K tokens total — i.e. this bounds cost, not token count exactly, since
+# the CLI has no native per-call token cap to target directly.
+MAX_BUDGET_USD_DEEP = 0.05
+
+
+class BudgetExceededError(RuntimeError):
+    pass
 
 # Files where a per-line review is never useful — skipping them means fewer, faster
 # claude calls with no loss in review quality. Path check is deliberately loose (matches
@@ -88,7 +105,7 @@ Perform a deep, practical, risk-focused review — not a syntax or style pass. D
    d. Concurrency / state-management problems: what happens if two requests run this simultaneously, or a job/webhook/payment operation runs twice — are unique constraints, locks, or idempotency keys needed? Race conditions like check-then-create without a unique constraint.
    e. Performance and regression issues: queries inside loops, `get()` then filtering/counting in PHP where `exists()`/`count()`/`value()`/`pluck()` would do it in the database, missing eager loading, unbounded/unpaginated queries, and whether a response-shape/status-code/validation change could break an existing API consumer.
    f. Missing or incorrect tests implied by this diff.
-   g. Only after all the above: maintainability, naming, magic numbers/strings worth naming, unnecessary complexity, over-engineering (abstraction with no real problem it solves) and under-engineering (huge unstructured methods, duplicated business logic).
+   g. Only after all the above: maintainability, naming, magic numbers/strings worth naming, unnecessary complexity, over-engineering (abstraction with no real problem it solves) and under-engineering (huge unstructured methods, duplicated business logic). If a dependency list is provided below, also check whether this diff hand-rolls something one of those already-installed libraries provides built-in (e.g. a UI library's own required-field/disabled/loading/tooltip handling, a date/collection utility already in a listed package, a framework helper) — flag reinventing it as a "suggestion" naming the exact built-in to use instead, not a stylistic nitpick.
 3. Validate every assumption before reporting an issue. Before flagging something as a bug: is there already validation elsewhere? Is the behavior guaranteed by the framework/library/API? Could another layer make the concern irrelevant? Don't suggest removing a null check just because static analysis claims non-null; if static analysis looks wrong, say so and suggest fixing the type info instead. If a finding depends on an assumption you can't verify from what's in front of you, state that uncertainty explicitly in the comment (e.g. "If X can be null here, this breaks Y; if the caller guarantees non-null, this isn't an issue") rather than asserting it as a certain bug.
 4. Consider architecture/design only after you understand the existing system — don't recommend a pattern just because it's familiar; recommend it only if the current code's responsibility is unclear, it introduces unnecessary coupling, or it will make a likely future change harder than it needs to be.
 5. Don't over-report. Raise a comment only when there's a concrete reason. Do NOT flag: pure style/formatting preferences, renames, or anything the codebase's existing conventions already do consistently elsewhere — automated tools handle those. Do not comment on code you have not actually read on both sides of the change (don't guess). Skip trivial or already-correct code. Never invent a duplicate of a comment you already made elsewhere. If there's nothing worth flagging, return an empty "comments" array — an empty result is a valid, good outcome.
@@ -166,48 +183,9 @@ g. Responsive/cross-browser — mobile/tablet/desktop and different screen sizes
 h. Missing/incorrect tests, specifically: loading/empty/error states, user interactions, form validation, API failure, and permission/role differences where relevant. Prefer flagging tests that check user-visible behavior over implementation detail.
 i. Maintainability — only after everything above.
 
-Also extend step 4 (architecture): is the component's responsibility clear and not doing too much (e.g. owning API fetching, form state, business rules, and presentation all at once)? Is business logic unnecessarily coupled to the UI? Are we duplicating an existing component/hook/utility instead of reusing it? Would adding a similar new case (e.g. another payment method, another form field type) mean modifying this component, or just adding to it?
+Also extend step 4 (architecture): is the component's responsibility clear and not doing too much (e.g. owning API fetching, form state, business rules, and presentation all at once)? Is business logic unnecessarily coupled to the UI? Are we duplicating an existing component/hook/utility instead of reusing it — or duplicating a capability the UI library itself already provides (check the dependency list below for the exact library/version in use before assuming custom code was necessary)? Would adding a similar new case (e.g. another payment method, another form field type) mean modifying this component, or just adding to it?
 
 If this is a visual change, compare it against the linked design/spec if there is one — spacing, typography, colors, and hover/focus/disabled/error states — and flag if an existing screen looks unintentionally affected. If the project has visual-regression snapshots, note if they'd need updating."""
-
-
-def _read_dependency_context(cwd: str) -> str | None:
-    try:
-        pkg_path = Path(cwd) / "package.json"
-        if not pkg_path.exists():
-            return None
-        pkg = json.loads(pkg_path.read_text(encoding="utf-8"))
-        deps = {**(pkg.get("dependencies") or {}), **(pkg.get("devDependencies") or {})}
-        entries = list(deps.items())
-        if not entries:
-            return None
-        listing = ", ".join(f"{name}@{version}" for name, version in entries)
-        return f"\n\nProject dependencies (from package.json — reason about these exact versions, not generic advice):\n{listing}"
-    except Exception:
-        return None
-
-
-# PHPStan's config declares the project's enforced static-analysis level and any
-# paths/rules it deliberately ignores — reviewing PHP without it risks flagging things
-# the project has already decided not to enforce, or missing its configured level.
-def _read_phpstan_context(cwd: str) -> str | None:
-    try:
-        config_path = next(
-            (p for p in (Path(cwd) / "phpstan.neon", Path(cwd) / "phpstan.neon.dist") if p.exists()),
-            None,
-        )
-        if config_path is None:
-            return None
-        contents = config_path.read_text(encoding="utf-8").strip()
-        if not contents:
-            return None
-        return (
-            f"\n\nPHPStan config ({config_path.name} — this project's enforced static-analysis level "
-            f"and any ignored paths/rules; align PHP review comments with it rather than a generic/stricter "
-            f"standard):\n{contents}"
-        )
-    except Exception:
-        return None
 
 
 COMMENTS_SCHEMA = {
@@ -247,6 +225,7 @@ async def _run_claude_call(
     schema: dict[str, Any],
     cwd: str | None = None,
     tools: str | None = None,
+    max_budget_usd: float | None = None,
 ) -> dict[str, Any]:
     # shell=False (the default, not passed explicitly) + relying on PATH resolution
     # of claude.exe directly (a real native binary, not a .cmd shim) is deliberate:
@@ -261,6 +240,8 @@ async def _run_claude_call(
         args += ["--tools", tools, "--permission-mode", "bypassPermissions"]
     else:
         args += ["--tools", ""]
+    if max_budget_usd is not None:
+        args += ["--max-budget-usd", str(max_budget_usd)]
 
     stdin_payload = f"{prompt}\n\n--- BEGIN DIFF ---\n{stdin_text}\n--- END DIFF ---"
 
@@ -293,6 +274,11 @@ async def _run_claude_call(
         # crashed before it could even produce JSON) — surface whichever isn't empty
         # instead of the previous "no stderr output" dead end.
         detail = stderr or stdout or "no output on stdout or stderr"
+        try:
+            if json.loads(stdout).get("subtype") == "error_max_budget_usd":
+                raise BudgetExceededError(f"claude CLI hit --max-budget-usd: {detail[:500]}")
+        except json.JSONDecodeError:
+            pass
         raise RuntimeError(f"claude CLI exited with code {result.returncode}: {detail[:2000]}")
 
     return _parse_envelope(result.stdout.decode("utf-8", errors="replace"))
@@ -307,15 +293,42 @@ async def _run_file_review(
     curated_context: str | None,
 ) -> tuple[list[dict[str, Any]], dict[str, float | int]]:
     frontend_addendum = FRONTEND_REVIEW_ADDENDUM if FRONTEND_PATH_RE.search(chunk["path"] or "") else ""
-    codebase_addendum = f"{CODEBASE_CONTEXT_ADDENDUM}{dep_context or ''}{phpstan_context or ''}" if cwd else ""
+    # dep_context/phpstan_context come from the PR's actual head commit via the GitHub
+    # Contents API (see routes/reviews.py) — available in every mode, not just deep —
+    # so a Read/Grep/Glob-less diff/curated review still knows what's already installed
+    # before suggesting new code that reinvents it (e.g. a UI library's built-in
+    # required-field indicator). CODEBASE_CONTEXT_ADDENDUM (the tool-use instructions)
+    # stays cwd-gated since only deep mode actually has Read/Grep/Glob available.
+    tools_addendum = CODEBASE_CONTEXT_ADDENDUM if cwd else ""
+    manifest_addendum = f"{dep_context or ''}{phpstan_context or ''}"
     prompt = (
-        f"{REVIEW_PROMPT}{frontend_addendum}{codebase_addendum}"
+        f"{REVIEW_PROMPT}{frontend_addendum}{tools_addendum}{manifest_addendum}"
         f"{_linked_pr_addendum(linked_context)}{_curated_context_addendum(curated_context)}"
     )
-    parsed, usage = await _run_claude_call(
-        prompt, chunk["text"], COMMENTS_SCHEMA, cwd=cwd, tools="Read,Grep,Glob" if cwd else None
-    )
-    return parsed["comments"], usage
+    try:
+        parsed, usage = await _run_claude_call(
+            prompt,
+            chunk["text"],
+            COMMENTS_SCHEMA,
+            cwd=cwd,
+            tools="Read,Grep,Glob" if cwd else None,
+            max_budget_usd=MAX_BUDGET_USD_DEEP if cwd else None,
+        )
+        return parsed["comments"], usage
+    except BudgetExceededError:
+        if not cwd:
+            raise
+        # This one file's exploration ran past MAX_BUDGET_USD_DEEP — degrade just this
+        # file to a plain diff-only pass (no tools, no budget cap needed) rather than
+        # losing every other file's already-successful deep-mode results to a whole-review
+        # fallback (see _run_review_with_codebase_context's catch-all in routes/reviews.py).
+        logger.warning("Deep review of %s exceeded $%s budget, falling back to diff-only for this file", chunk["path"], MAX_BUDGET_USD_DEEP)
+        prompt_diff_only = (
+            f"{REVIEW_PROMPT}{frontend_addendum}{manifest_addendum}"
+            f"{_linked_pr_addendum(linked_context)}{_curated_context_addendum(curated_context)}"
+        )
+        parsed, usage = await _run_claude_call(prompt_diff_only, chunk["text"], COMMENTS_SCHEMA)
+        return parsed["comments"], usage
 
 
 async def _run_summary(
@@ -336,9 +349,9 @@ async def run_review(
     cwd: str | None = None,
     linked_context: str | None = None,
     curated_context: str | None = None,
+    dep_context: str | None = None,
+    phpstan_context: str | None = None,
 ) -> dict[str, Any]:
-    dep_context = _read_dependency_context(cwd) if cwd else None
-    phpstan_context = _read_phpstan_context(cwd) if cwd else None
     chunks = [c for c in split_diff_by_file(diff) if not _is_trivial_chunk(c["path"], c["text"])]
 
     summary_task = asyncio.ensure_future(_run_summary(diff, linked_context, curated_context))

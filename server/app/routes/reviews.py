@@ -1,3 +1,4 @@
+import json
 import logging
 import random
 import time
@@ -17,24 +18,40 @@ router = APIRouter()
 
 
 async def _run_review_with_codebase_context(
-    owner: str, name: str, number: int, diff: str, linked_context: str | None
+    owner: str,
+    name: str,
+    number: int,
+    diff: str,
+    head_sha: str,
+    linked_context: str | None,
+    dep_context: str | None,
+    phpstan_context: str | None,
 ) -> dict[str, Any]:
     repo_path = find_local_repo(name)
     if not repo_path:
-        result = await claude.run_review(diff, linked_context=linked_context)
+        result = await claude.run_review(
+            diff, linked_context=linked_context, dep_context=dep_context, phpstan_context=phpstan_context
+        )
         return {**result, "withCodebaseContext": False}
 
     worktree_dir = None
     try:
-        pr = await github.get_pr(owner, name, number)
-        worktree_dir = await prepare_review_worktree(repo_path, owner, name, number, pr["head"]["sha"])
-        result = await claude.run_review(diff, cwd=worktree_dir, linked_context=linked_context)
+        worktree_dir = await prepare_review_worktree(repo_path, owner, name, number, head_sha)
+        result = await claude.run_review(
+            diff,
+            cwd=worktree_dir,
+            linked_context=linked_context,
+            dep_context=dep_context,
+            phpstan_context=phpstan_context,
+        )
         return {**result, "withCodebaseContext": True}
     except Exception as err:
         logger.warning(
             "Codebase-aware review failed for %s/%s#%s, falling back to diff-only: %s", owner, name, number, err
         )
-        result = await claude.run_review(diff, linked_context=linked_context)
+        result = await claude.run_review(
+            diff, linked_context=linked_context, dep_context=dep_context, phpstan_context=phpstan_context
+        )
         return {**result, "withCodebaseContext": False}
     finally:
         if worktree_dir:
@@ -49,27 +66,104 @@ async def _run_review_with_codebase_context(
 # one git-grep pass per changed file for likely referencing files) and paste it into a
 # single one-shot prompt. Same local-clone requirement and same diff-only fallback.
 async def _run_review_with_curated_context(
-    owner: str, name: str, number: int, diff: str, linked_context: str | None
+    owner: str,
+    name: str,
+    number: int,
+    diff: str,
+    head_sha: str,
+    linked_context: str | None,
+    dep_context: str | None,
+    phpstan_context: str | None,
 ) -> dict[str, Any]:
     repo_path = find_local_repo(name)
     if not repo_path:
-        result = await claude.run_review(diff, linked_context=linked_context)
+        result = await claude.run_review(
+            diff, linked_context=linked_context, dep_context=dep_context, phpstan_context=phpstan_context
+        )
         return {**result, "withCodebaseContext": False}
 
     try:
-        pr = await github.get_pr(owner, name, number)
         changed_paths = [c["path"] for c in claude.split_diff_by_file(diff) if c["path"]]
-        curated_context = await gather_curated_context(
-            repo_path, owner, name, number, pr["head"]["sha"], changed_paths
+        curated_context = await gather_curated_context(repo_path, owner, name, number, head_sha, changed_paths)
+        result = await claude.run_review(
+            diff,
+            linked_context=linked_context,
+            curated_context=curated_context,
+            dep_context=dep_context,
+            phpstan_context=phpstan_context,
         )
-        result = await claude.run_review(diff, linked_context=linked_context, curated_context=curated_context)
         return {**result, "withCodebaseContext": bool(curated_context)}
     except Exception as err:
         logger.warning(
             "Curated-context review failed for %s/%s#%s, falling back to diff-only: %s", owner, name, number, err
         )
-        result = await claude.run_review(diff, linked_context=linked_context)
+        result = await claude.run_review(
+            diff, linked_context=linked_context, dep_context=dep_context, phpstan_context=phpstan_context
+        )
         return {**result, "withCodebaseContext": False}
+
+
+# Manifest paths tried per ecosystem — first match wins for PHPStan (only one config
+# is active); Node/PHP manifests aren't mutually exclusive (a repo can have both, e.g.
+# a Laravel app with a Vite/JS frontend workspace), so both are always attempted.
+NODE_MANIFEST_PATH = "package.json"
+PHP_MANIFEST_PATH = "composer.json"
+PHPSTAN_CONFIG_PATHS = ("phpstan.neon", "phpstan.neon.dist")
+
+
+# Dependency awareness fetched straight from the PR's head commit via the GitHub
+# Contents API — independent of review mode and of LOCAL_REPOS_ROOT/local-clone
+# availability, unlike the old cwd-gated (deep-mode-only) filesystem read. This means
+# diff-only and curated reviews know what's already installed too, so they can flag a
+# diff reinventing something a listed library already provides (see REVIEW_PROMPT
+# step 2g and FRONTEND_REVIEW_ADDENDUM in claude.py) instead of only deep mode noticing.
+async def _build_dependency_context(owner: str, name: str, head_sha: str) -> str | None:
+    parts: list[str] = []
+
+    try:
+        raw = await github.get_file_content(owner, name, NODE_MANIFEST_PATH, head_sha)
+        pkg = json.loads(raw)
+        deps = {**(pkg.get("dependencies") or {}), **(pkg.get("devDependencies") or {})}
+        if deps:
+            parts.append(f"Node ({NODE_MANIFEST_PATH}): " + ", ".join(f"{n}@{v}" for n, v in deps.items()))
+    except (AppError, json.JSONDecodeError, KeyError):
+        pass
+
+    try:
+        raw = await github.get_file_content(owner, name, PHP_MANIFEST_PATH, head_sha)
+        pkg = json.loads(raw)
+        deps = {**(pkg.get("require") or {}), **(pkg.get("require-dev") or {})}
+        if deps:
+            parts.append(f"PHP ({PHP_MANIFEST_PATH}): " + ", ".join(f"{n}@{v}" for n, v in deps.items()))
+    except (AppError, json.JSONDecodeError, KeyError):
+        pass
+
+    if not parts:
+        return None
+    return (
+        "\n\nProject dependencies (reason about these exact versions, not generic advice — and check "
+        "whether new code in this diff reinvents something one of these already provides built-in):\n"
+        + "\n".join(parts)
+    )
+
+
+# PHPStan's config declares the project's enforced static-analysis level and any
+# paths/rules it deliberately ignores — reviewing PHP without it risks flagging things
+# the project has already decided not to enforce, or missing its configured level.
+async def _build_phpstan_context(owner: str, name: str, head_sha: str) -> str | None:
+    for path in PHPSTAN_CONFIG_PATHS:
+        try:
+            contents = (await github.get_file_content(owner, name, path, head_sha)).strip()
+        except AppError:
+            continue
+        if not contents:
+            continue
+        return (
+            f"\n\nPHPStan config ({path} — this project's enforced static-analysis level and any "
+            f"ignored paths/rules; align PHP review comments with it rather than a generic/stricter "
+            f"standard):\n{contents}"
+        )
+    return None
 
 
 # Total cap across all linked PRs' diffs combined, to keep the prompt this gets
@@ -180,14 +274,24 @@ def _iso_now() -> str:
 async def _run_and_store_review(repo: str, number: int, mode: str) -> dict[str, Any]:
     owner, name = repo.split("/")
     diff = await github.get_pr_diff(owner, name, number)
+    pr = await github.get_pr(owner, name, number)
+    head_sha = pr["head"]["sha"]
     pr_record = db.read_db()["prs"].get(db.pr_key(repo, number))
     linked_context = await _build_linked_context(pr_record)
+    dep_context = await _build_dependency_context(owner, name, head_sha)
+    phpstan_context = await _build_phpstan_context(owner, name, head_sha)
     if mode == "deep":
-        result = await _run_review_with_codebase_context(owner, name, number, diff, linked_context)
+        result = await _run_review_with_codebase_context(
+            owner, name, number, diff, head_sha, linked_context, dep_context, phpstan_context
+        )
     elif mode == "curated":
-        result = await _run_review_with_curated_context(owner, name, number, diff, linked_context)
+        result = await _run_review_with_curated_context(
+            owner, name, number, diff, head_sha, linked_context, dep_context, phpstan_context
+        )
     else:
-        base = await claude.run_review(diff, linked_context=linked_context)
+        base = await claude.run_review(
+            diff, linked_context=linked_context, dep_context=dep_context, phpstan_context=phpstan_context
+        )
         result = {**base, "withCodebaseContext": False}
 
     review_id = f"review_{_base36(int(time.time() * 1000))}{_random_base36(4)}"

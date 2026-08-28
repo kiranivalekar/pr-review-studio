@@ -5,3 +5,6 @@ dist/
 .vscode
 data/db.json
 data/worktrees/
+__pycache__/
+*.pyc
+server/.venv/
