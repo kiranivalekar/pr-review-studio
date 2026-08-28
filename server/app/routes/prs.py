@@ -69,7 +69,11 @@ async def list_prs() -> list[dict[str, Any]]:
             db.delete_pr(pr["repo"], pr["number"])
 
     full_db = db.read_db()
-    prs = [pr for pr in full_db["prs"].values() if pr.get("state") is None or pr.get("state") == "open"]
+    prs = [
+        pr
+        for pr in full_db["prs"].values()
+        if pr.get("source") == "manual" or pr.get("state") is None or pr.get("state") == "open"
+    ]
     result = [_with_status(pr, full_db) for pr in prs]
     result.sort(key=lambda pr: pr.get("updatedAt") or "", reverse=True)
     return result

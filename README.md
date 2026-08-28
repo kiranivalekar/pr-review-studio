@@ -41,6 +41,18 @@ Single-screen app: Assigned PRs at `/`, plus a per-PR Review screen at
 npm install
 ```
 
+Create the Python virtualenv `dev:server` expects at `server/.venv` and
+install the backend's dependencies (`server/requirements.txt`: `fastapi`,
+`uvicorn[standard]`, `httpx`, `python-dotenv`):
+
+```
+cd server
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+cd ..
+```
+
 Copy `server/.env.example` to `server/.env` and fill in:
 
 | Variable | Purpose |
