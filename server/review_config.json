@@ -1,0 +1,33 @@
+{
+  "reviewConcurrency": 4,
+  "checklist": [
+    { "id": "scope", "group": "common", "label": "Scope — matches the PR's intent, no unrelated changes mixed in" },
+    { "id": "compatibility", "group": "common", "label": "Compatibility — contracts/APIs/schemas preserved or safely migrated" },
+    { "id": "tests", "group": "common", "label": "Tests — adequate coverage for the change, including edge cases" },
+    { "id": "maintainability", "group": "common", "label": "Maintainability — readable, consistent with project conventions" },
+
+    { "id": "backend_security", "group": "backend", "label": "Security — authn/authz, input validation, no sensitive data exposure" },
+    { "id": "data_integrity", "group": "backend", "label": "Data integrity — no data loss/corruption risk" },
+    { "id": "concurrency", "group": "backend", "label": "Concurrency/state — safe under simultaneous or repeated execution" },
+    { "id": "backend_performance", "group": "backend", "label": "Performance — no N+1s, unbounded queries, or scalability issues" },
+    { "id": "backend_design", "group": "backend", "label": "Design/architecture — backend pattern and structure fit the change" },
+
+    { "id": "ui_correctness", "group": "frontend", "label": "UI correctness — loading/empty/error states handled, matches requirement" },
+    { "id": "state_management", "group": "frontend", "label": "State management — no stale/duplicated state or race conditions" },
+    { "id": "frontend_security", "group": "frontend", "label": "Frontend security — no XSS, unsafe raw HTML, or secrets exposed client-side" },
+    { "id": "accessibility", "group": "frontend", "label": "Accessibility — keyboard navigation, semantic HTML, ARIA where needed" },
+    { "id": "responsive", "group": "frontend", "label": "Responsive/cross-browser — works across viewport sizes and browsers" }
+  ],
+  "diffReview": {
+    "chunkSize": 5,
+    "maxTokens": 10000
+  },
+  "curatedReview": {
+    "chunkSize": 5,
+    "maxTokens": 10000
+  },
+  "deepReview": {
+    "chunkSize": 5,
+    "maxTokens": 10000
+  }
+}

@@ -1,6 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { CheckCircle2, ExternalLink, Link2, Loader2, PanelLeft, Play, Plus, RotateCcw, Sparkles, X } from "lucide-react";
+import {
+  CheckCircle2,
+  ExternalLink,
+  Link2,
+  ListChecks,
+  Loader2,
+  PanelLeft,
+  Play,
+  Plus,
+  RotateCcw,
+  Sparkles,
+  X,
+} from "lucide-react";
 import {
   fetchPRs,
   runReview,
@@ -21,6 +33,7 @@ import { DiffView } from "../components/DiffView";
 import { FileTree } from "../components/FileTree";
 import { CommentCard } from "../components/CommentCard";
 import { PrReviewWriteup } from "../components/PrReviewWriteup";
+import { PrChecklist } from "../components/PrChecklist";
 import { parseUnifiedDiff, matchCommentsToDiff, buildFileTree, fileElementId } from "../lib/parseDiff";
 import { VERDICT_STYLES, parseSummary } from "../lib/parseSummary";
 import { formatTokenCount, totalTokens } from "../lib/formatUsage";
@@ -61,7 +74,7 @@ export function Review() {
   const [activeFile, setActiveFile] = useState(null);
   const [linkUrl, setLinkUrl] = useState("");
   const [linking, setLinking] = useState(false);
-  const [reviewMode, setReviewMode] = useState("inline"); // "inline" | "writeup"
+  const [reviewMode, setReviewMode] = useState("inline"); // "inline" | "writeup" | "checklist"
 
   // Reuses the Assigned PRs list cached by that screen instead of re-fetching
   // it just to read one entry — only falls back to a real /api/prs call when
@@ -446,6 +459,17 @@ export function Review() {
                 <Sparkles size={12} />
                 PR review
               </button>
+              <button
+                onClick={() => setReviewMode("checklist")}
+                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                  reviewMode === "checklist"
+                    ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                    : "text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                }`}
+              >
+                <ListChecks size={12} />
+                PR checklist
+              </button>
             </div>
           </div>
           <Button
@@ -467,6 +491,8 @@ export function Review() {
           onSelectChange={handleSelectChange}
         />
       )}
+
+      {!running && review && reviewMode === "checklist" && <PrChecklist review={review} />}
 
       {!running && !loading && reviewMode === "inline" && files.length > 0 && (
         <>

@@ -6,26 +6,11 @@ import subprocess
 from typing import Any
 
 from app.concurrency import map_with_concurrency
-from app.config import claude_cli_path
+from app.config import checklist_items, claude_cli_path, review_chunk_size, review_concurrency, review_max_tokens
 
 logger = logging.getLogger(__name__)
 
-REVIEW_CONCURRENCY = 4
-
-# Deep (codebase-aware) mode lets Claude loop Read/Grep/Glob across several turns per
-# file — with no other cap, one file's exploration has run up to ~200K tokens (a real
-# review hit 165K cache-creation + 25K output + 9K cache-read tokens on a 5-file PR).
-# The claude CLI's headless -p mode has no direct max-turns/max-tokens knob, but it does
-# expose --max-budget-usd, a hard dollar ceiling it self-enforces mid-run. $0.05 is sized
-# against Sonnet 5 pricing ($2/$10 per MTok in/out, ~$2.50 cache-write, ~$0.20 cache-read)
-# using that same review's token mix (~83% cache-creation, ~13% output, ~4% cache-read)
-# scaled down to ~10K tokens total — i.e. this bounds cost, not token count exactly, since
-# the CLI has no native per-call token cap to target directly.
-MAX_BUDGET_USD_DEEP = 0.05
-
-
-class BudgetExceededError(RuntimeError):
-    pass
+REVIEW_CONCURRENCY = review_concurrency()
 
 # Files where a per-line review is never useful — skipping them means fewer, faster
 # claude calls with no loss in review quality. Path check is deliberately loose (matches
@@ -119,7 +104,16 @@ Keep it tight: a few sentences and at most two short code quotes, not an essay �
 
 Separately from any code quoted inside "text", when you have a concrete, exact code fix in mind for that specific line (or lines), also set "suggestion" to the exact replacement text — matching the original indentation, no diff markers (+/-), no explanation, just the code that should replace what's there, ready to drop in as-is. Set "suggestion" to null when the comment is conceptual (a question, a design concern, something needing a bigger rework, a missing test, or a migration/deployment/rollback risk) rather than a specific line-level edit — an illustrative alternative shown inside "text" doesn't need a matching "suggestion"."""
 
-SUMMARY_PROMPT = """A unified diff for a full GitHub pull request follows on stdin. You are the same senior reviewer providing the overall orientation shown to a reviewer before they read the diff (and before per-file inline findings).
+# Fixed checklist shown in the client's "PR checklist" tab (see PLAN.md §10, condensed
+# to the categories that are actually independently checkable — steps like "understand
+# the PR first" are reasoning process, not a pass/warning verdict). ids are stable
+# across reviews so the frontend can render a consistent list; label is shown alongside
+# the status Claude assigns each one. Sourced from review_config.json's "checklist" —
+# not hardcoded — so items can be added/removed/relabeled without a code change.
+CHECKLIST_ITEMS = checklist_items()
+CHECKLIST_ITEM_IDS = [item["id"] for item in CHECKLIST_ITEMS]
+
+SUMMARY_PROMPT = f"""A unified diff for a full GitHub pull request follows on stdin. You are the same senior reviewer providing the overall orientation shown to a reviewer before they read the diff (and before per-file inline findings).
 
 Before writing the summary, reason through the PR as a whole — this shapes the verdict, but isn't itself part of the output:
 - What problem is this PR solving, and does the diff actually stay within that scope — any unrelated or unnecessary changes mixed in?
@@ -133,7 +127,11 @@ Write "summary" as:
 1. One verdict line, exactly one of: "APPROVE", "APPROVE WITH MINOR CHANGES", "CHANGES REQUESTED", or "BLOCK" — based on the overall risk (production breakage, data loss, security, incorrect business logic, a broken cross-file contract, or major performance problems push toward CHANGES REQUESTED/BLOCK; only cosmetic/minor concerns still allow APPROVE WITH MINOR CHANGES).
 2. Then 2-4 plain-English sentences: what this PR actually changes and why it matters (the net effect across all files, not a line-by-line recap or diff-stat restatement), whether it stayed in scope, plus a one-line note on the single biggest risk area to pay attention to while reviewing (if any) — e.g. a migration, a destructive query, a new external call, a caching change, or a cross-file contract change.
 
-Format as: "Verdict: <VERDICT> — <sentences>"."""
+Format as: "Verdict: <VERDICT> — <sentences>".
+
+Also fill "checklist" — one entry per item below, in this exact set of ids (don't add, skip, rename, or reorder any). Each is tagged [common], [backend], or [frontend] — the diff may contain only backend files, only frontend files, or both:
+{chr(10).join(f'- "{item["id"]}" [{item["group"]}]: {item["label"]}' for item in CHECKLIST_ITEMS)}
+For each id, set "status" to "pass" (reviewed, no real concern), "warning" (reviewed, and a genuine concern exists — at any severity, even a nit worth naming), or "unchecked" (this item doesn't meaningfully apply to this diff). Use "unchecked" both for a [common] item that plainly doesn't apply (e.g. "tests" for a pure config/docs change) and — importantly — for every [backend] item when the diff touches no backend/server files, or every [frontend] item when the diff touches no frontend/UI files; don't guess or force a verdict on a stack this diff doesn't touch. Set "note" to one short, specific sentence grounded in this diff — name the actual file/behavior, never a generic restatement of the label (e.g. not "security looks fine", instead "no new input crosses a trust boundary in this diff"), or state plainly that this stack isn't part of the diff when marking it "unchecked" for that reason. A "warning" here doesn't have to duplicate an inline comment word-for-word, but should reflect the same underlying concern if one was raised for this category."""
 
 CODEBASE_CONTEXT_ADDENDUM = """
 
@@ -188,6 +186,15 @@ Also extend step 4 (architecture): is the component's responsibility clear and n
 If this is a visual change, compare it against the linked design/spec if there is one — spacing, typography, colors, and hover/focus/disabled/error states — and flag if an existing screen looks unintentionally affected. If the project has visual-regression snapshots, note if they'd need updating."""
 
 
+BACKEND_NEW_FILE_ADDENDUM = """
+
+This file is backend/server-side code. Project convention, check this first: if the diff header shows this file is newly created (a "new file mode" line, or the old side is /dev/null — not a rename/move of an existing file, and not a config/migration/DTO/plain-data file with no real behavior), add one additional comment on low-level design (LLD) pattern fit — GoF-style object design patterns (Repository, Factory/Abstract Factory, Builder, Strategy, Observer, Decorator, Adapter, Command, Template Method, Facade, Singleton, etc.), not high-level system architecture:
+- Name the pattern(s) actually used in this file as written — or say plainly if it's unstructured/procedural code with no discernible pattern.
+- Judge whether that's the right fit for what this specific file does and how it's likely to be extended — base this on the file's actual responsibilities, not a reflexive "use pattern X" recommendation.
+- If a different or additional pattern would serve this file's real responsibility better, name it specifically and explain concretely why (e.g. "this class both queries the database and enforces business rules — extracting a Repository would let the persistence detail be swapped or mocked in tests without touching the rule logic," not "consider separation of concerns"). If the pattern already in use is the right fit, say so explicitly — a confirming architecture note is still useful context for the reviewer, not a wasted comment.
+Set "severity" to "suggestion" for this comment unless the current shape already causes a concrete problem evident from this diff (untestable coupling, a change that will clearly be painful to extend) — only then use "issue". Skip this addition entirely for a file that already existed before this PR."""
+
+
 COMMENTS_SCHEMA = {
     "type": "object",
     "properties": {
@@ -212,8 +219,22 @@ COMMENTS_SCHEMA = {
 
 SUMMARY_SCHEMA = {
     "type": "object",
-    "properties": {"summary": {"type": "string"}},
-    "required": ["summary"],
+    "properties": {
+        "summary": {"type": "string"},
+        "checklist": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "enum": CHECKLIST_ITEM_IDS},
+                    "status": {"type": "string", "enum": ["pass", "warning", "unchecked"]},
+                    "note": {"type": "string"},
+                },
+                "required": ["id", "status", "note"],
+            },
+        },
+    },
+    "required": ["summary", "checklist"],
 }
 
 
@@ -225,7 +246,6 @@ async def _run_claude_call(
     schema: dict[str, Any],
     cwd: str | None = None,
     tools: str | None = None,
-    max_budget_usd: float | None = None,
 ) -> dict[str, Any]:
     # shell=False (the default, not passed explicitly) + relying on PATH resolution
     # of claude.exe directly (a real native binary, not a .cmd shim) is deliberate:
@@ -240,8 +260,6 @@ async def _run_claude_call(
         args += ["--tools", tools, "--permission-mode", "bypassPermissions"]
     else:
         args += ["--tools", ""]
-    if max_budget_usd is not None:
-        args += ["--max-budget-usd", str(max_budget_usd)]
 
     stdin_payload = f"{prompt}\n\n--- BEGIN DIFF ---\n{stdin_text}\n--- END DIFF ---"
 
@@ -274,11 +292,6 @@ async def _run_claude_call(
         # crashed before it could even produce JSON) — surface whichever isn't empty
         # instead of the previous "no stderr output" dead end.
         detail = stderr or stdout or "no output on stdout or stderr"
-        try:
-            if json.loads(stdout).get("subtype") == "error_max_budget_usd":
-                raise BudgetExceededError(f"claude CLI hit --max-budget-usd: {detail[:500]}")
-        except json.JSONDecodeError:
-            pass
         raise RuntimeError(f"claude CLI exited with code {result.returncode}: {detail[:2000]}")
 
     return _parse_envelope(result.stdout.decode("utf-8", errors="replace"))
@@ -292,7 +305,11 @@ async def _run_file_review(
     linked_context: str | None,
     curated_context: str | None,
 ) -> tuple[list[dict[str, Any]], dict[str, float | int]]:
-    frontend_addendum = FRONTEND_REVIEW_ADDENDUM if FRONTEND_PATH_RE.search(chunk["path"] or "") else ""
+    is_frontend = bool(FRONTEND_PATH_RE.search(chunk["path"] or ""))
+    frontend_addendum = FRONTEND_REVIEW_ADDENDUM if is_frontend else ""
+    # LLD/design-pattern check only makes sense for backend files that actually have
+    # behavior to structure — frontend gets its own architecture guidance above instead.
+    backend_addendum = BACKEND_NEW_FILE_ADDENDUM if not is_frontend else ""
     # dep_context/phpstan_context come from the PR's actual head commit via the GitHub
     # Contents API (see routes/reviews.py) — available in every mode, not just deep —
     # so a Read/Grep/Glob-less diff/curated review still knows what's already installed
@@ -302,41 +319,21 @@ async def _run_file_review(
     tools_addendum = CODEBASE_CONTEXT_ADDENDUM if cwd else ""
     manifest_addendum = f"{dep_context or ''}{phpstan_context or ''}"
     prompt = (
-        f"{REVIEW_PROMPT}{frontend_addendum}{tools_addendum}{manifest_addendum}"
+        f"{REVIEW_PROMPT}{frontend_addendum}{backend_addendum}{tools_addendum}{manifest_addendum}"
         f"{_linked_pr_addendum(linked_context)}{_curated_context_addendum(curated_context)}"
     )
-    try:
-        parsed, usage = await _run_claude_call(
-            prompt,
-            chunk["text"],
-            COMMENTS_SCHEMA,
-            cwd=cwd,
-            tools="Read,Grep,Glob" if cwd else None,
-            max_budget_usd=MAX_BUDGET_USD_DEEP if cwd else None,
-        )
-        return parsed["comments"], usage
-    except BudgetExceededError:
-        if not cwd:
-            raise
-        # This one file's exploration ran past MAX_BUDGET_USD_DEEP — degrade just this
-        # file to a plain diff-only pass (no tools, no budget cap needed) rather than
-        # losing every other file's already-successful deep-mode results to a whole-review
-        # fallback (see _run_review_with_codebase_context's catch-all in routes/reviews.py).
-        logger.warning("Deep review of %s exceeded $%s budget, falling back to diff-only for this file", chunk["path"], MAX_BUDGET_USD_DEEP)
-        prompt_diff_only = (
-            f"{REVIEW_PROMPT}{frontend_addendum}{manifest_addendum}"
-            f"{_linked_pr_addendum(linked_context)}{_curated_context_addendum(curated_context)}"
-        )
-        parsed, usage = await _run_claude_call(prompt_diff_only, chunk["text"], COMMENTS_SCHEMA)
-        return parsed["comments"], usage
+    parsed, usage = await _run_claude_call(
+        prompt, chunk["text"], COMMENTS_SCHEMA, cwd=cwd, tools="Read,Grep,Glob" if cwd else None
+    )
+    return parsed["comments"], usage
 
 
 async def _run_summary(
     diff_text: str, linked_context: str | None, curated_context: str | None
-) -> tuple[str, dict[str, float | int]]:
+) -> tuple[str, list[dict[str, str]], dict[str, float | int]]:
     prompt = f"{SUMMARY_PROMPT}{_linked_pr_addendum(linked_context)}{_curated_context_addendum(curated_context)}"
     parsed, usage = await _run_claude_call(prompt, diff_text, SUMMARY_SCHEMA)
-    return parsed["summary"], usage
+    return parsed["summary"], parsed.get("checklist") or [], usage
 
 
 # Reviews a whole PR diff by splitting it per file and reviewing files in parallel
@@ -346,6 +343,7 @@ async def _run_summary(
 # by its own lightweight call, run concurrently with the per-file passes.
 async def run_review(
     diff: str,
+    mode: str = "diff",
     cwd: str | None = None,
     linked_context: str | None = None,
     curated_context: str | None = None,
@@ -358,20 +356,47 @@ async def run_review(
 
     per_file_comments: list[list[dict[str, Any]] | None] = [None] * len(chunks)
     per_file_usage: list[dict[str, float | int] | None] = [None] * len(chunks)
+    indexed_chunks = list(enumerate(chunks))
 
-    async def review_one(chunk: dict[str, Any], i: int) -> None:
+    async def review_one(item: tuple[int, dict[str, Any]], _local_i: int) -> None:
+        i, chunk = item
         comments, usage = await _run_file_review(
             chunk, cwd, dep_context, phpstan_context, linked_context, curated_context
         )
         per_file_comments[i] = comments
         per_file_usage[i] = usage
 
-    await map_with_concurrency(chunks, REVIEW_CONCURRENCY, review_one)
+    # Every mode ("diff", "curated", "deep" — see review_config.json's "<mode>Review"
+    # sections) reviews files in chunks (chunkSize, default 5) instead of all at once
+    # when a token budget is configured, checking cumulative tokens spent (input +
+    # output + both cache variants — see _total_tokens) before starting each next
+    # chunk. Files after the budget is hit are skipped entirely (not diff-only'd) —
+    # this bounds a runaway multi-file PR's cost without capping any single file.
+    max_tokens = review_max_tokens(mode)
+    if max_tokens is not None:
+        chunk_size = review_chunk_size(mode)
+        spent_tokens = 0
+        for start in range(0, len(indexed_chunks), chunk_size):
+            if spent_tokens >= max_tokens:
+                logger.warning(
+                    "%s review token budget (%d) reached after %d/%d files reviewed — skipping remaining %d file(s)",
+                    mode,
+                    max_tokens,
+                    start,
+                    len(indexed_chunks),
+                    len(indexed_chunks) - start,
+                )
+                break
+            batch = indexed_chunks[start : start + chunk_size]
+            await map_with_concurrency(batch, REVIEW_CONCURRENCY, review_one)
+            spent_tokens += sum(_total_tokens(per_file_usage[i] or {}) for i, _ in batch)
+    else:
+        await map_with_concurrency(indexed_chunks, REVIEW_CONCURRENCY, review_one)
 
-    summary, summary_usage = await summary_task
+    summary, checklist, summary_usage = await summary_task
     comments = [c for group in per_file_comments for c in (group or [])]
     usage = sum_usage([summary_usage, *(u for u in per_file_usage if u)])
-    return {"summary": summary, "comments": comments, "usage": usage}
+    return {"summary": summary, "checklist": checklist, "comments": comments, "usage": usage}
 
 
 VALID_SEVERITIES = {"nit", "suggestion", "issue", "blocking"}
@@ -408,6 +433,19 @@ def sum_usage(entries: list[dict[str, float | int]]) -> dict[str, float | int]:
     return total
 
 
+# All token types combined (input + output + both cache variants) — the single number
+# review_max_tokens(mode) is compared against, since a cheap cache-read-heavy call and
+# an expensive cache-creation-heavy call should count the same toward "how much context
+# got processed" rather than "how much this cost."
+def _total_tokens(usage: dict[str, float | int]) -> int:
+    return int(
+        usage.get("inputTokens", 0)
+        + usage.get("outputTokens", 0)
+        + usage.get("cacheReadInputTokens", 0)
+        + usage.get("cacheCreationInputTokens", 0)
+    )
+
+
 def _parse_envelope(stdout: str) -> tuple[dict[str, Any], dict[str, float | int]]:
     try:
         envelope = json.loads(stdout)
@@ -427,6 +465,12 @@ def _parse_envelope(stdout: str) -> tuple[dict[str, Any], dict[str, float | int]
     def _coerce_suggestion(value: Any) -> str | None:
         return value if isinstance(value, str) and value.strip() != "" else None
 
+    def _coerce_checklist_status(value: Any) -> str:
+        return value if value in {"pass", "warning", "unchecked"} else "unchecked"
+
+    def _coerce_checklist_note(value: Any) -> str:
+        return value.strip() if isinstance(value, str) else ""
+
     if isinstance(structured.get("comments"), list):
         result["comments"] = [
             {
@@ -443,6 +487,26 @@ def _parse_envelope(stdout: str) -> tuple[dict[str, Any], dict[str, float | int]
 
     if isinstance(structured.get("summary"), str):
         result["summary"] = structured["summary"].strip()
+
+        # Always emit exactly CHECKLIST_ITEMS' ids, in that fixed order, with the
+        # label attached server-side — the frontend renders this list as-is instead of
+        # keeping its own copy of the labels in sync. Any id Claude omitted (or an
+        # invalid status/note) defaults to "unchecked" rather than dropping the row,
+        # so the checklist tab always shows a stable, complete list.
+        raw_checklist = structured.get("checklist")
+        checklist_by_id = (
+            {c.get("id"): c for c in raw_checklist if isinstance(c, dict)} if isinstance(raw_checklist, list) else {}
+        )
+        result["checklist"] = [
+            {
+                "id": item["id"],
+                "label": item["label"],
+                "group": item["group"],
+                "status": _coerce_checklist_status((checklist_by_id.get(item["id"]) or {}).get("status")),
+                "note": _coerce_checklist_note((checklist_by_id.get(item["id"]) or {}).get("note")),
+            }
+            for item in CHECKLIST_ITEMS
+        ]
 
     if "comments" not in result and "summary" not in result:
         raise RuntimeError(f'claude CLI response had no structured "comments" or "summary": {stdout[:500]}')

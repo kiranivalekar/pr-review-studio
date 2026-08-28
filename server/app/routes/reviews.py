@@ -29,8 +29,10 @@ async def _run_review_with_codebase_context(
 ) -> dict[str, Any]:
     repo_path = find_local_repo(name)
     if not repo_path:
+        # No local clone to run tools against — this degrades to a plain diff-only
+        # call, so it's budgeted as "diff" mode, not "deep".
         result = await claude.run_review(
-            diff, linked_context=linked_context, dep_context=dep_context, phpstan_context=phpstan_context
+            diff, mode="diff", linked_context=linked_context, dep_context=dep_context, phpstan_context=phpstan_context
         )
         return {**result, "withCodebaseContext": False}
 
@@ -39,6 +41,7 @@ async def _run_review_with_codebase_context(
         worktree_dir = await prepare_review_worktree(repo_path, owner, name, number, head_sha)
         result = await claude.run_review(
             diff,
+            mode="deep",
             cwd=worktree_dir,
             linked_context=linked_context,
             dep_context=dep_context,
@@ -50,7 +53,7 @@ async def _run_review_with_codebase_context(
             "Codebase-aware review failed for %s/%s#%s, falling back to diff-only: %s", owner, name, number, err
         )
         result = await claude.run_review(
-            diff, linked_context=linked_context, dep_context=dep_context, phpstan_context=phpstan_context
+            diff, mode="diff", linked_context=linked_context, dep_context=dep_context, phpstan_context=phpstan_context
         )
         return {**result, "withCodebaseContext": False}
     finally:
@@ -78,7 +81,7 @@ async def _run_review_with_curated_context(
     repo_path = find_local_repo(name)
     if not repo_path:
         result = await claude.run_review(
-            diff, linked_context=linked_context, dep_context=dep_context, phpstan_context=phpstan_context
+            diff, mode="diff", linked_context=linked_context, dep_context=dep_context, phpstan_context=phpstan_context
         )
         return {**result, "withCodebaseContext": False}
 
@@ -87,6 +90,7 @@ async def _run_review_with_curated_context(
         curated_context = await gather_curated_context(repo_path, owner, name, number, head_sha, changed_paths)
         result = await claude.run_review(
             diff,
+            mode="curated",
             linked_context=linked_context,
             curated_context=curated_context,
             dep_context=dep_context,
@@ -98,7 +102,7 @@ async def _run_review_with_curated_context(
             "Curated-context review failed for %s/%s#%s, falling back to diff-only: %s", owner, name, number, err
         )
         result = await claude.run_review(
-            diff, linked_context=linked_context, dep_context=dep_context, phpstan_context=phpstan_context
+            diff, mode="diff", linked_context=linked_context, dep_context=dep_context, phpstan_context=phpstan_context
         )
         return {**result, "withCodebaseContext": False}
 
@@ -290,7 +294,7 @@ async def _run_and_store_review(repo: str, number: int, mode: str) -> dict[str, 
         )
     else:
         base = await claude.run_review(
-            diff, linked_context=linked_context, dep_context=dep_context, phpstan_context=phpstan_context
+            diff, mode="diff", linked_context=linked_context, dep_context=dep_context, phpstan_context=phpstan_context
         )
         result = {**base, "withCodebaseContext": False}
 
@@ -303,6 +307,7 @@ async def _run_and_store_review(repo: str, number: int, mode: str) -> dict[str, 
         "model": "claude-sonnet-5",
         "withCodebaseContext": result["withCodebaseContext"],
         "summary": result.get("summary") or "",
+        "checklist": result.get("checklist") or [],
         "usage": result.get("usage") or claude.ZERO_USAGE,
         "comments": [
             {"id": f"c{i + 1}", **c, "state": "suggested", "pushedAt": None}
