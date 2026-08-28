@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { CheckCircle2, ExternalLink, Link2, Loader2, PanelLeft, Play, Plus, RotateCcw, Sparkles, X } from "lucide-react";
 import {
@@ -11,6 +11,7 @@ import {
   addLinkedPR,
   removeLinkedPR,
 } from "../api";
+import { getCachedPrs, setCachedPrs } from "../lib/prsCache";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Badge } from "../components/ui/Badge";
@@ -62,16 +63,30 @@ export function Review() {
   const [linking, setLinking] = useState(false);
   const [reviewMode, setReviewMode] = useState("inline"); // "inline" | "writeup"
 
+  // Reuses the Assigned PRs list cached by that screen instead of re-fetching
+  // it just to read one entry — only falls back to a real /api/prs call when
+  // there's no cache yet (e.g. this PR's review URL was opened directly).
+  function loadPr() {
+    const cached = getCachedPrs();
+    if (cached) {
+      return Promise.resolve(cached.find((p) => p.repo === fullRepo && p.number === prNumber) ?? null);
+    }
+    return fetchPRs().then((prs) => {
+      setCachedPrs(prs);
+      return prs.find((p) => p.repo === fullRepo && p.number === prNumber) ?? null;
+    });
+  }
+
   function load() {
     setLoading(true);
     setError(null);
     Promise.all([
-      fetchPRs(),
+      loadPr(),
       fetchReviews({ repo: fullRepo, number: prNumber }),
       fetchPRDiff(owner, repo, prNumber),
     ])
-      .then(([prs, reviews, diff]) => {
-        setPr(prs.find((p) => p.repo === fullRepo && p.number === prNumber) ?? null);
+      .then(([foundPr, reviews, diff]) => {
+        setPr(foundPr);
         const latest = [...reviews].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
         setReview(latest ?? null);
         setDiffText(diff);
@@ -80,7 +95,15 @@ export function Review() {
       .finally(() => setLoading(false));
   }
 
-  useEffect(load, [fullRepo, prNumber, owner, repo]);
+  // Guards against React StrictMode's dev-only double-invoke of effects, which
+  // otherwise fires every fetch here (prs/reviews/diff) twice on each load.
+  const loadedKeyRef = useRef(null);
+  useEffect(() => {
+    const key = `${fullRepo}#${prNumber}`;
+    if (loadedKeyRef.current === key) return;
+    loadedKeyRef.current = key;
+    load();
+  }, [fullRepo, prNumber, owner, repo]);
 
   // Default to "everything pushable is selected" whenever a different review loads;
   // dismiss/restore on the same review doesn't reset this (comment.state already

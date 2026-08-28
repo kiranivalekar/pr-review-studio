@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ChevronDown, ChevronRight, ExternalLink, Loader2, Play, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { fetchPRs, addPR, removePR, batchReviewRepo } from "../api";
+import { getCachedPrs, setCachedPrs } from "../lib/prsCache";
 import { DiffStat } from "../components/DiffStat";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -22,8 +23,8 @@ function groupByRepo(prs) {
 
 export function AssignedPRs() {
   const navigate = useNavigate();
-  const [prs, setPrs] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [prs, setPrs] = useState(getCachedPrs() ?? []);
+  const [loading, setLoading] = useState(getCachedPrs() === null);
   const [error, setError] = useState(null);
   const [url, setUrl] = useState("");
   const [adding, setAdding] = useState(false);
@@ -35,12 +36,19 @@ export function AssignedPRs() {
     setLoading(true);
     setError(null);
     fetchPRs()
-      .then(setPrs)
+      .then((data) => {
+        setCachedPrs(data);
+        setPrs(data);
+      })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }
 
-  useEffect(load, []);
+  // Auto-fetch only on the very first load of this session — a later
+  // navigation back to this page reuses the cache; use Refresh to re-fetch.
+  useEffect(() => {
+    if (getCachedPrs() === null) load();
+  }, []);
 
   const repoGroups = useMemo(() => groupByRepo(prs), [prs]);
 
@@ -126,7 +134,11 @@ export function AssignedPRs() {
   async function handleRemove(pr) {
     try {
       await removePR(pr.repo, pr.number);
-      setPrs((prev) => prev.filter((p) => !(p.repo === pr.repo && p.number === pr.number)));
+      setPrs((prev) => {
+        const next = prev.filter((p) => !(p.repo === pr.repo && p.number === pr.number));
+        setCachedPrs(next);
+        return next;
+      });
     } catch (err) {
       setError(err.message);
     }
