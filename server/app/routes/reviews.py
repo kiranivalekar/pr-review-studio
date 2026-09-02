@@ -223,23 +223,18 @@ async def _build_linked_context(pr: dict[str, Any] | None) -> str | None:
     return combined
 
 
-SEVERITY_EMOJI = {"blocking": "🚫", "issue": "⚠️", "suggestion": "💡", "nit": "💬"}
-
-
 # GitHub renders a ```suggestion fenced block as a real "Apply suggestion" button,
 # so this is a genuine upgrade over embedding the replacement as a plain code block.
 def _format_inline_body(c: dict[str, Any]) -> str:
     suggestion = f"\n\n```suggestion\n{c['suggestion']}\n```" if c.get("suggestion") else ""
-    return f"{SEVERITY_EMOJI.get(c['severity'], '')} **{c['severity']}**\n\n{c['text']}{suggestion}"
+    return f"{c['text']}{suggestion}"
 
 
 # Comments Claude couldn't tie to a specific diff line (line is None) can't be
 # posted as inline review comments — GitHub requires path+line for those — so they
 # go in the review's overall body instead of being silently dropped.
 def _format_unplaced(comments: list[dict[str, Any]]) -> str:
-    return "\n\n---\n\n".join(
-        f"### {SEVERITY_EMOJI.get(c['severity'], '')} {c['severity']} — `{c['file']}`\n{c['text']}" for c in comments
-    )
+    return "\n\n---\n\n".join(f"### `{c['file']}`\n{c['text']}" for c in comments)
 
 
 class PushBody(BaseModel):
