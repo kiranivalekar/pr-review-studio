@@ -20,14 +20,14 @@
   ],
   "diffReview": {
     "chunkSize": 5,
-    "maxTokens": 10000
+    "maxTokens": null
   },
   "curatedReview": {
     "chunkSize": 5,
-    "maxTokens": 10000
+    "maxTokens": null
   },
   "deepReview": {
     "chunkSize": 5,
-    "maxTokens": 10000
+    "maxTokens": null
   }
 }

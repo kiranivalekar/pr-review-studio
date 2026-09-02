@@ -1,8 +1,12 @@
 import asyncio
+import hashlib
 import json
 import logging
+import os
 import re
 import subprocess
+import tempfile
+from pathlib import Path
 from typing import Any
 
 from app.concurrency import map_with_concurrency
@@ -19,12 +23,60 @@ TRIVIAL_PATH_RE = re.compile(r"(^|/)(package-lock\.json|yarn\.lock|pnpm-lock\.ya
 GENERATED_PATH_RE = re.compile(r"(^|/)(dist|build|vendor|node_modules)/")
 MINIFIED_OR_MAP_RE = re.compile(r"\.(min\.js|min\.css|map)$")
 
-# Extension-based heuristic for "this file is frontend/UI code" — good enough to decide
-# whether FRONTEND_REVIEW_ADDENDUM applies. .js/.ts are inherently ambiguous (could be a
-# Node backend file), but skew frontend often enough on a typical Laravel+SPA repo that
-# the addendum's extra UI/accessibility/browser questions are still more useful than not
-# having them; REVIEW_PROMPT already tells Claude to skip whatever plainly doesn't apply.
-FRONTEND_PATH_RE = re.compile(r"\.(jsx?|tsx?|vue|svelte|css|scss|sass|less|html?)$", re.IGNORECASE)
+# Extension-based heuristic for "this file is frontend/UI code" — unambiguous for these
+# extensions, so FRONTEND_REVIEW_ADDENDUM always applies regardless of repo. .js/.ts alone
+# are the ambiguous case (could be a Node backend file) — resolved by _classify_frontend()
+# below using the repo's own name instead of guessing per file. FRONTEND_REPO_NAMES and
+# BACKEND_REPO_NAMES are this org's actual repos, listed explicitly rather than inferred
+# from a "front" substring — that heuristic alone gets odyssey-frontdoor (a backend repo)
+# wrong. An unlisted repo not in either set still falls back to the substring guess.
+FRONTEND_UNAMBIGUOUS_RE = re.compile(r"\.(jsx|tsx|vue|svelte|css|scss|sass|less|html?)$", re.IGNORECASE)
+AMBIGUOUS_SCRIPT_RE = re.compile(r"\.(js|ts)$", re.IGNORECASE)
+REPO_FRONTEND_NAME_RE = re.compile(r"front", re.IGNORECASE)
+FRONTEND_REPO_NAMES = {
+    "gfs-saas-agent-portal-front",
+    "gfs-saas-front",
+    "gfs-saas-instantquote-front",
+    "gfs-saas-policyholder-portal-front",
+    "odyssey-charts-ui",
+    "odyssey-shared-ui",
+}
+BACKEND_REPO_NAMES = {
+    "gfs-saas-accounting",
+    "gfs-saas-agent-portal",
+    "gfs-saas-auth",
+    "gfs-saas-claim",
+    "gfs-saas-core",
+    "gfs-saas-forms",
+    "gfs-saas-infra",
+    "gfs-saas-instantquote",
+    "gfs-saas-odyssey-api",
+    "gfs-saas-policy",
+    "gfs-saas-producer",
+    "gfs-saas-routeql",
+    "job-tracker",
+    "odyssey-frontdoor",
+    "taurus-api-testing",
+    "taurus-reports-service",
+}
+
+
+# repo_name is the bare repo name (not "owner/repo"). Only resolves the .js/.ts ambiguity —
+# an unambiguous extension (.jsx, .css, etc.) is always frontend no matter what the repo is
+# named, so a mixed Laravel+Vite repo's actual frontend files still get the right addendum.
+def _classify_frontend(path: str | None, repo_name: str) -> bool:
+    if not path:
+        return False
+    if FRONTEND_UNAMBIGUOUS_RE.search(path):
+        return True
+    if AMBIGUOUS_SCRIPT_RE.search(path):
+        name = repo_name.lower()
+        if name in FRONTEND_REPO_NAMES:
+            return True
+        if name in BACKEND_REPO_NAMES:
+            return False
+        return bool(REPO_FRONTEND_NAME_RE.search(repo_name))
+    return False
 
 
 def _is_trivial_chunk(file_path: str | None, chunk_text: str) -> bool:
@@ -78,7 +130,13 @@ def split_diff_by_file(diff_text: str) -> list[dict[str, Any]]:
     return chunks
 
 
-REVIEW_PROMPT = """You are a Senior Software Engineer, Technical Lead, and Code Reviewer reviewing one file's changes from a larger production pull request. A unified diff for this single file follows on stdin. Assume it's part of a production Laravel/PHP application unless the file's extension or content clearly indicates another stack — apply the equivalent scrutiny either way.
+# Full instructions — used only in deep mode (cwd set, Read/Grep/Glob available), where
+# the model can actually act on "check how this is used elsewhere" and similar guidance
+# that's meaningless without tool access. diff/curated mode uses REVIEW_PROMPT_LITE below
+# instead: a condensed version of the same priority order and output-format rules, cut to
+# a fraction of the length since caching doesn't reduce this cost (see _run_claude_call) —
+# shorter text is the only lever left that actually cuts tokens for the common case.
+REVIEW_PROMPT_FULL = """You are a Senior Software Engineer, Technical Lead, and Code Reviewer reviewing one file's changes from a larger production pull request. A unified diff for this single file follows on stdin. Assume it's part of a production Laravel/PHP application unless the file's extension or content clearly indicates another stack — apply the equivalent scrutiny either way.
 
 Perform a deep, practical, risk-focused review — not a syntax or style pass. Do not approve just because the happy path works. Follow this process, in order:
 
@@ -103,6 +161,21 @@ For each finding, add an entry to "comments" — file, line (as shown in the dif
 Keep it tight: a few sentences and at most two short code quotes, not an essay — this is a review comment, not documentation. Set "severity": "blocking" (Blocker) only for things that would break production, corrupt/lose data, or are a security risk; "issue" (Major) for a real bug, concurrency/state problem, or major correctness/performance issue that should be fixed before merge; "suggestion" (Minor) for a worthwhile improvement that isn't a bug; "nit" (Nit) for a minor/maintainability point that shouldn't block the PR. Mention a concrete strength only when genuinely notable (e.g. "good use of a DB transaction here") — never generic praise, and never as its own comment separate from an actual finding.
 
 Separately from any code quoted inside "text", when you have a concrete, exact code fix in mind for that specific line (or lines), also set "suggestion" to the exact replacement text — matching the original indentation, no diff markers (+/-), no explanation, just the code that should replace what's there, ready to drop in as-is. Set "suggestion" to null when the comment is conceptual (a question, a design concern, something needing a bigger rework, a missing test, or a migration/deployment/rollback risk) rather than a specific line-level edit — an illustrative alternative shown inside "text" doesn't need a matching "suggestion"."""
+
+# Condensed version of the above — same priority order and output-format rules, same
+# severity/suggestion semantics (kept verbatim since those drive the app's own data
+# model, not just review quality), but without the exhaustive example enumeration, the
+# "understand existing code first" step (meaningless without Read/Grep/Glob), and the
+# secondary "alternative approach" code block. Used for diff/curated mode.
+REVIEW_PROMPT_LITE = """You are a Senior Software Engineer reviewing one file's changes from a production pull request. A unified diff for this file follows on stdin. Assume it's part of a production Laravel/PHP application unless the file's extension or content clearly indicates another stack.
+
+Do a risk-focused review, not a style pass — don't approve just because the happy path works. Check correctness in priority order: (1) functional/business-logic bugs — null/empty-string/'0'/0/false/empty-collection/boundary handling, PHP truthy/falsy pitfalls (`if ($value)` against '', '0', 0, false, null, []), unguarded null derefs (`find()`, `first()`, `value()`, `optional()`), swallowed exceptions; (2) security — authn/authz, IDOR/BOLA, injection, mass assignment, XSS, secrets/PII, unsafe uploads, never trusting client-side validation; (3) data loss/corruption — unscoped destructive queries, missing transactions, unhandled empty-result cases; (4) concurrency — race conditions, missing idempotency/locks on repeatable operations; (5) performance/regressions — N+1 queries, unbounded/unpaginated queries, missing eager loading, breaking an existing API consumer's contract; (6) missing/incorrect tests; (7) only then maintainability, naming, over/under-engineering, and reinventing something an installed dependency already provides (flag as "suggestion", naming the built-in).
+
+Validate before flagging: check whether handling already exists elsewhere or is guaranteed by the framework, and state uncertainty explicitly rather than asserting an unverified guess as fact. Recommend an architectural change only if the current responsibility is genuinely unclear or introduces real coupling — not reflexively.
+
+Don't over-report: skip pure style/formatting, renames, and existing codebase conventions. Never comment on code you haven't actually read. If nothing is worth flagging, return an empty "comments" array.
+
+For each finding, set file/line/side (LEFT=removed, RIGHT=added/context) and write "text" as Markdown: a bold headline naming the problem, brief prose on what's expected vs. actual (quote the exact code in a fenced block only if it clarifies), and the concrete failure scenario — a few sentences, not an essay. Set "severity": "blocking" (breaks production, data loss, or a security risk), "issue" (real bug, concurrency/state problem, or major correctness/performance issue), "suggestion" (worthwhile, non-bug improvement), or "nit" (minor point that shouldn't block the PR). Set "suggestion" to the exact drop-in replacement code when you have one — matching original indentation, no diff markers or explanation — otherwise null (conceptual comment, question, or bigger rework)."""
 
 # Fixed checklist shown in the client's "PR checklist" tab (see PLAN.md §10, condensed
 # to the categories that are actually independently checkable — steps like "understand
@@ -170,7 +243,7 @@ This file is frontend/UI code (React/Vue/Angular/JS/TS/CSS/HTML).
 
 Project convention, check this first: if the diff header shows this file is newly created (a "new file mode" line, or the old side is /dev/null — not a rename/move of an existing file) and it's a JavaScript source file (.js/.jsx, not .ts/.tsx), flag it as an "issue" — new frontend source files must always be written in TypeScript, not plain JavaScript. Exception: typical root-level tooling/config files that conventionally stay plain JS even in TypeScript projects (e.g. vite.config.js, tailwind.config.js, postcss.config.js, eslint config files) are not a violation — use judgment on whether this is app/component source vs. tooling config.
 
-Keep the process above, but for this file replace step 2's correctness order and fold its content into this order instead — skip whatever plainly doesn't apply (SQL, PHP truthiness, DB transactions, etc.):
+Keep the review process above, but for this file use this correctness order instead of the general one above — skip whatever plainly doesn't apply (SQL, PHP truthiness, DB transactions, etc.):
 a. Functional/UI correctness — does the UI behave per the requirement/design? Are loading, empty, and error states all handled? What happens on a slow network, an API failure, a double-click, or the user navigating away mid-request? Are disabled buttons actually protected against duplicate submits? Are success/failure messages clear? Do refresh/back/forward work correctly?
 b. State management — is state kept at the right level (local vs. global), with no unnecessary global state or duplicated sources of truth that could go stale? Could this cause a race condition, an unnecessary effect trigger, or an infinite render/effect loop? Is derived state being stored when it could just be computed? For React specifically: scrutinize `useEffect` dependency arrays, memoization, callbacks, and stale closures.
 c. API/data handling — is the API contract used correctly (request/response shape)? Are loading/error states handled for this call? Any unnecessary or duplicate fetches? Is caching appropriate? What happens if the response is missing an expected field or has an unexpected shape?
@@ -181,7 +254,7 @@ g. Responsive/cross-browser — mobile/tablet/desktop and different screen sizes
 h. Missing/incorrect tests, specifically: loading/empty/error states, user interactions, form validation, API failure, and permission/role differences where relevant. Prefer flagging tests that check user-visible behavior over implementation detail.
 i. Maintainability — only after everything above.
 
-Also extend step 4 (architecture): is the component's responsibility clear and not doing too much (e.g. owning API fetching, form state, business rules, and presentation all at once)? Is business logic unnecessarily coupled to the UI? Are we duplicating an existing component/hook/utility instead of reusing it — or duplicating a capability the UI library itself already provides (check the dependency list below for the exact library/version in use before assuming custom code was necessary)? Would adding a similar new case (e.g. another payment method, another form field type) mean modifying this component, or just adding to it?
+Also extend the architecture guidance above: is the component's responsibility clear and not doing too much (e.g. owning API fetching, form state, business rules, and presentation all at once)? Is business logic unnecessarily coupled to the UI? Are we duplicating an existing component/hook/utility instead of reusing it — or duplicating a capability the UI library itself already provides (check the dependency list below for the exact library/version in use before assuming custom code was necessary)? Would adding a similar new case (e.g. another payment method, another form field type) mean modifying this component, or just adding to it?
 
 If this is a visual change, compare it against the linked design/spec if there is one — spacing, typography, colors, and hover/focus/disabled/error states — and flag if an existing screen looks unintentionally affected. If the project has visual-regression snapshots, note if they'd need updating."""
 
@@ -238,6 +311,30 @@ SUMMARY_SCHEMA = {
 }
 
 
+# Backs use_system_prompt in _run_claude_call below. Content-addressed rather than a
+# fresh tempfile.mkstemp() per call: since REVIEW_PROMPT/addenda only ever take a couple
+# of fixed values (frontend/backend), every review of that variant — any repo, any PR —
+# resolves to the exact same path and file, which is what makes the CLI's prompt cache
+# actually treat repeat calls as identical. Written once (first call to see a given
+# variant this process); never rewritten after that, since the content is a pure
+# function of this module's own constants and can't change without a code edit (which
+# already requires a server restart — see CLAUDE.md's "no --reload" note). The rename is
+# atomic so a concurrent writer for the same variant can never leave a reader with a
+# partial file.
+_SYSTEM_PROMPT_CACHE_DIR = Path(tempfile.gettempdir()) / "pr-review-studio-system-prompts"
+
+
+def _system_prompt_file_for(prompt: str) -> str:
+    _SYSTEM_PROMPT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]
+    path = _SYSTEM_PROMPT_CACHE_DIR / f"{digest}.txt"
+    if not path.exists():
+        tmp_path = path.with_suffix(f".{os.getpid()}.tmp")
+        tmp_path.write_text(prompt, encoding="utf-8")
+        os.replace(tmp_path, path)
+    return str(path)
+
+
 # Runs one headless `claude -p` call over `stdin_text`, validated against `schema`.
 # Shared by both the per-file comment calls and the whole-diff summary call.
 async def _run_claude_call(
@@ -246,6 +343,8 @@ async def _run_claude_call(
     schema: dict[str, Any],
     cwd: str | None = None,
     tools: str | None = None,
+    use_system_prompt: bool = False,
+    context_text: str = "",
 ) -> dict[str, Any]:
     # shell=False (the default, not passed explicitly) + relying on PATH resolution
     # of claude.exe directly (a real native binary, not a .cmd shim) is deliberate:
@@ -261,7 +360,40 @@ async def _run_claude_call(
     else:
         args += ["--tools", ""]
 
-    stdin_payload = f"{prompt}\n\n--- BEGIN DIFF ---\n{stdin_text}\n--- END DIFF ---"
+    # use_system_prompt=True moves `prompt` (REVIEW_PROMPT/SUMMARY_PROMPT + addenda — the
+    # same fixed text on every call with no cwd) into --system-prompt-file instead of the
+    # stdin blob. Two wins verified empirically: it replaces the CLI's own default system
+    # prompt (which auto-discovers this app's own CLAUDE.md and other per-machine context
+    # totally irrelevant to reviewing someone else's diff — ~8-9K tokens of pure overhead
+    # per call in testing), and it gives Anthropic's prompt cache a clean, stable boundary
+    # to reuse across every file/review instead of a blob whose tail (the diff) always
+    # differs — a repeat call with an unchanged --system-prompt-file dropped from ~$0.036
+    # (cache miss) to ~$0.003 (full cache hit). Not used for deep-mode calls: those already
+    # have a per-repo/per-PR cwd making each one unique, so there's little cross-call
+    # caching to gain, and the CLI's own environment/tooling context is more plausibly
+    # relevant when tools are enabled.
+    #
+    # context_text is kept separate from `prompt` on purpose: it's per-review/per-repo
+    # material (dependency manifests, linked-PR diffs, curated call-site snippets) that's
+    # never the same across two different PRs, so it always travels with the diff on
+    # stdin — folding it into `prompt` would make every review's --system-prompt-file
+    # unique and defeat the whole point of caching it (REVIEW_PROMPT + addenda alone has
+    # only a couple of fixed variants total, shared across every repo and every review).
+    diff_block = f"--- BEGIN DIFF ---\n{stdin_text}\n--- END DIFF ---"
+    body = f"{context_text}\n\n{diff_block}" if context_text else diff_block
+
+    if use_system_prompt:
+        # Verified empirically that the cache boundary keys off the --system-prompt-file
+        # *path*, not just its contents — a fresh tempfile.mkstemp() path per call missed
+        # cache every time even with byte-identical content, while reusing the same path
+        # hit full cache. So this resolves to a stable, content-addressed path instead of a
+        # per-call temp file: identical prompt text (there are only a couple of variants —
+        # frontend/backend addenda — ever produced here) always maps to the same file, so
+        # every review across every repo shares one cached system prompt per variant.
+        args += ["--system-prompt-file", _system_prompt_file_for(prompt)]
+        stdin_payload = body
+    else:
+        stdin_payload = f"{prompt}\n\n{body}"
 
     # asyncio.create_subprocess_exec (not used here) requires a ProactorEventLoop on
     # Windows, but uvicorn --reload forces SelectorEventLoop there (it needs
@@ -300,30 +432,57 @@ async def _run_claude_call(
 async def _run_file_review(
     chunk: dict[str, Any],
     cwd: str | None,
+    repo_name: str,
     dep_context: str | None,
     phpstan_context: str | None,
     linked_context: str | None,
     curated_context: str | None,
 ) -> tuple[list[dict[str, Any]], dict[str, float | int]]:
-    is_frontend = bool(FRONTEND_PATH_RE.search(chunk["path"] or ""))
+    is_frontend = _classify_frontend(chunk["path"], repo_name)
     frontend_addendum = FRONTEND_REVIEW_ADDENDUM if is_frontend else ""
     # LLD/design-pattern check only makes sense for backend files that actually have
     # behavior to structure — frontend gets its own architecture guidance above instead.
     backend_addendum = BACKEND_NEW_FILE_ADDENDUM if not is_frontend else ""
-    # dep_context/phpstan_context come from the PR's actual head commit via the GitHub
-    # Contents API (see routes/reviews.py) — available in every mode, not just deep —
-    # so a Read/Grep/Glob-less diff/curated review still knows what's already installed
-    # before suggesting new code that reinvents it (e.g. a UI library's built-in
-    # required-field indicator). CODEBASE_CONTEXT_ADDENDUM (the tool-use instructions)
-    # stays cwd-gated since only deep mode actually has Read/Grep/Glob available.
     tools_addendum = CODEBASE_CONTEXT_ADDENDUM if cwd else ""
-    manifest_addendum = f"{dep_context or ''}{phpstan_context or ''}"
-    prompt = (
-        f"{REVIEW_PROMPT}{frontend_addendum}{backend_addendum}{tools_addendum}{manifest_addendum}"
-        f"{_linked_pr_addendum(linked_context)}{_curated_context_addendum(curated_context)}"
-    )
+    # Full instructions only in deep mode — everywhere else uses the condensed
+    # REVIEW_PROMPT_LITE, since caching doesn't reduce this cost (see _run_claude_call)
+    # and shorter text is what actually cuts tokens for diff/curated mode.
+    review_prompt = REVIEW_PROMPT_FULL if cwd else REVIEW_PROMPT_LITE
+
+    # dep_context/phpstan_context come from the PR's actual head commit via the GitHub
+    # Contents API (see routes/reviews.py) — available in every mode, not just deep — so a
+    # Read/Grep/Glob-less diff/curated review still knows what's already installed before
+    # suggesting new code that reinvents it. Only the manifest relevant to this file's own
+    # stack is included — a backend file gets no benefit from the Node dependency list, a
+    # frontend file none from PHPStan's config.
+    manifest_addendum = (dep_context or "") if is_frontend else (phpstan_context or "")
+    linked_curated_addendum = f"{_linked_pr_addendum(linked_context)}{_curated_context_addendum(curated_context)}"
+
+    if cwd:
+        # Deep mode never uses --system-prompt-file (see _run_claude_call's
+        # use_system_prompt), so there's no cached file to keep lean — everything goes
+        # into one blob sent inline on stdin, as before.
+        static_prompt = f"{review_prompt}{frontend_addendum}{backend_addendum}{tools_addendum}"
+        context_text = f"{manifest_addendum}{linked_curated_addendum}"
+    else:
+        # diff/curated mode: static_prompt IS the --system-prompt-file, so it stays just
+        # REVIEW_PROMPT_LITE — completely identical for every file, frontend or backend —
+        # instead of splitting into an is_frontend-dependent variant. That's the difference
+        # between two cached files (one per stack) and a single one shared by every file,
+        # every repo, every review. frontend_addendum/backend_addendum are exactly as
+        # PR/file-specific as manifest_addendum, so they move to context_text (stdin,
+        # alongside the diff) for the same reason that one's already there.
+        static_prompt = review_prompt
+        context_text = f"{frontend_addendum}{backend_addendum}{manifest_addendum}{linked_curated_addendum}"
+
     parsed, usage = await _run_claude_call(
-        prompt, chunk["text"], COMMENTS_SCHEMA, cwd=cwd, tools="Read,Grep,Glob" if cwd else None
+        static_prompt,
+        chunk["text"],
+        COMMENTS_SCHEMA,
+        cwd=cwd,
+        tools="Read,Grep,Glob" if cwd else None,
+        use_system_prompt=not cwd,
+        context_text=context_text,
     )
     return parsed["comments"], usage
 
@@ -345,6 +504,7 @@ async def run_review(
     diff: str,
     mode: str = "diff",
     cwd: str | None = None,
+    repo_name: str = "",
     linked_context: str | None = None,
     curated_context: str | None = None,
     dep_context: str | None = None,
@@ -352,7 +512,13 @@ async def run_review(
 ) -> dict[str, Any]:
     chunks = [c for c in split_diff_by_file(diff) if not _is_trivial_chunk(c["path"], c["text"])]
 
-    summary_task = asyncio.ensure_future(_run_summary(diff, linked_context, curated_context))
+    # The summary/checklist needs its own whole-diff call — only run it in deep mode.
+    # diff/curated reviews (the common case, including batch review) skip it entirely:
+    # no verdict line, no PR-checklist tab for those, but one fewer full-prompt Claude
+    # call on every review that isn't deep.
+    summary_task = (
+        asyncio.ensure_future(_run_summary(diff, linked_context, curated_context)) if mode == "deep" else None
+    )
 
     per_file_comments: list[list[dict[str, Any]] | None] = [None] * len(chunks)
     per_file_usage: list[dict[str, float | int] | None] = [None] * len(chunks)
@@ -361,7 +527,7 @@ async def run_review(
     async def review_one(item: tuple[int, dict[str, Any]], _local_i: int) -> None:
         i, chunk = item
         comments, usage = await _run_file_review(
-            chunk, cwd, dep_context, phpstan_context, linked_context, curated_context
+            chunk, cwd, repo_name, dep_context, phpstan_context, linked_context, curated_context
         )
         per_file_comments[i] = comments
         per_file_usage[i] = usage
@@ -393,7 +559,10 @@ async def run_review(
     else:
         await map_with_concurrency(indexed_chunks, REVIEW_CONCURRENCY, review_one)
 
-    summary, checklist, summary_usage = await summary_task
+    if summary_task is not None:
+        summary, checklist, summary_usage = await summary_task
+    else:
+        summary, checklist, summary_usage = "", [], ZERO_USAGE
     comments = [c for group in per_file_comments for c in (group or [])]
     usage = sum_usage([summary_usage, *(u for u in per_file_usage if u)])
     return {"summary": summary, "checklist": checklist, "comments": comments, "usage": usage}
