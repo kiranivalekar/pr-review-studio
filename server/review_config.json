@@ -1,5 +1,37 @@
 {
   "reviewConcurrency": 4,
+  "reviewModel": "claude-sonnet-5",
+  "batchMaxFiles": 7,
+  "batchMaxDiffTokens": 20000,
+  "estimateCharsPerToken": 3,
+  "estimateReserveTokens": 4000,
+  "linkedContextCharCap": 20000,
+  "frontendRepoNames": [
+    "gfs-saas-agent-portal-front",
+    "gfs-saas-front",
+    "gfs-saas-instantquote-front",
+    "gfs-saas-policyholder-portal-front",
+    "odyssey-charts-ui",
+    "odyssey-shared-ui"
+  ],
+  "backendRepoNames": [
+    "gfs-saas-accounting",
+    "gfs-saas-agent-portal",
+    "gfs-saas-auth",
+    "gfs-saas-claim",
+    "gfs-saas-core",
+    "gfs-saas-forms",
+    "gfs-saas-infra",
+    "gfs-saas-instantquote",
+    "gfs-saas-odyssey-api",
+    "gfs-saas-policy",
+    "gfs-saas-producer",
+    "gfs-saas-routeql",
+    "job-tracker",
+    "odyssey-frontdoor",
+    "taurus-api-testing",
+    "taurus-reports-service"
+  ],
   "checklist": [
     { "id": "scope", "group": "common", "label": "Scope — matches the PR's intent, no unrelated changes mixed in" },
     { "id": "compatibility", "group": "common", "label": "Compatibility — contracts/APIs/schemas preserved or safely migrated" },
@@ -19,15 +51,12 @@
     { "id": "responsive", "group": "frontend", "label": "Responsive/cross-browser — works across viewport sizes and browsers" }
   ],
   "diffReview": {
-    "chunkSize": 5,
     "maxTokens": null
   },
   "curatedReview": {
-    "chunkSize": 5,
     "maxTokens": null
   },
   "deepReview": {
-    "chunkSize": 5,
-    "maxTokens": null
+    "maxTokens": 200000
   }
 }

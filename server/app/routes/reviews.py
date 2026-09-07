@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from app import claude, db, github
 from app.concurrency import map_with_concurrency
+from app.config import linked_context_char_cap
 from app.errors import AppError
 from app.local_repo import cleanup_review_worktree, find_local_repo, gather_curated_context, prepare_review_worktree
 
@@ -193,9 +194,10 @@ async def _build_phpstan_context(owner: str, name: str, head_sha: str) -> str | 
 
 
 # Total cap across all linked PRs' diffs combined, to keep the prompt this gets
-# appended to (once per file review call, plus the summary call) from blowing up on a
-# huge linked PR — truncated rather than dropped, so partial cross-PR context still helps.
-LINKED_CONTEXT_CHAR_CAP = 20_000
+# appended to (once per batch review call, plus the summary call) from blowing up on a
+# huge linked PR — truncated rather than dropped, so partial cross-PR context still
+# helps. Configurable via review_config.json's "linkedContextCharCap".
+LINKED_CONTEXT_CHAR_CAP = linked_context_char_cap()
 
 
 async def _build_linked_context(pr: dict[str, Any] | None) -> str | None:
@@ -326,7 +328,7 @@ async def _run_and_store_review(repo: str, number: int, mode: str) -> dict[str, 
         "repo": repo,
         "number": number,
         "createdAt": _iso_now(),
-        "model": "claude-sonnet-5",
+        "model": claude.REVIEW_MODEL,
         "withCodebaseContext": result["withCodebaseContext"],
         "summary": result.get("summary") or "",
         "checklist": result.get("checklist") or [],

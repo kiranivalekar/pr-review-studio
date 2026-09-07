@@ -44,19 +44,15 @@ _REVIEW_CONFIG = _load_review_config()
 
 
 # Each review mode ("diff", "curated", "deep" — see reviews.py's VALID_REVIEW_MODES)
-# gets its own section, keyed "<mode>Review", e.g. "deepReview". Every mode reviews
-# files in chunks of this size, checking cumulative token usage against
-# review_max_tokens(mode) before starting each next chunk — see claude.run_review().
-# Files after the budget is hit are skipped, not diff-only'd.
-def review_chunk_size(mode: str) -> int:
-    return int((_REVIEW_CONFIG.get(f"{mode}Review") or {}).get("chunkSize", 5))
-
-
+# gets its own section, keyed "<mode>Review", e.g. "deepReview".
+#
 # Total tokens (input + output + cache-read + cache-creation, summed across every file
 # reviewed so far in this mode) allowed before a review stops reviewing further files.
 # Token-based rather than dollar-based since the ask was to bound context/exploration
 # size directly, not spend — set to null in review_config.json to disable the cap for
-# that mode entirely.
+# that mode entirely. Checked before dispatching each individual file (bounded by
+# REVIEW_CONCURRENCY in flight when the threshold is crossed), not batched behind a
+# separate chunk-size knob — see claude.run_review().
 def review_max_tokens(mode: str) -> int | None:
     value = (_REVIEW_CONFIG.get(f"{mode}Review") or {}).get("maxTokens")
     return int(value) if value is not None else None
@@ -67,6 +63,91 @@ def review_max_tokens(mode: str) -> int | None:
 # review-policy knobs so it's tunable without touching code.
 def review_concurrency() -> int:
     return int(_REVIEW_CONFIG.get("reviewConcurrency", 4))
+
+
+# Batching knobs for claude.py's _group_into_batches() — applies to every mode
+# (diff/curated/deep alike, see run_review()). Files are grouped into one Claude call
+# per batch instead of one call per file, capped by whichever threshold is hit first:
+# batchMaxFiles (file count) or batchMaxDiffTokens (estimated diff size, via
+# _estimate_chunk_tokens). Top-level in review_config.json, not per-mode, since the
+# same fixed per-call overhead this bounds applies identically regardless of mode.
+def batch_max_files() -> int:
+    return int(_REVIEW_CONFIG.get("batchMaxFiles", 7))
+
+
+def batch_max_diff_tokens() -> int:
+    return int(_REVIEW_CONFIG.get("batchMaxDiffTokens", 20_000))
+
+
+# Model pinned explicitly on every claude CLI call (--model, in
+# claude._run_claude_call) rather than left to the logged-in CLI session's own
+# default, so upgrading models is a config edit, not a code change.
+def review_model() -> str:
+    return str(_REVIEW_CONFIG.get("reviewModel") or "claude-sonnet-5")
+
+
+# claude._estimate_chunk_tokens's scheduling estimate: characters/token ratio (applied
+# to a chunk's diff text) plus a flat reserve for the model's answer/tool activity. Only
+# used to decide batch sizes and when a token budget is exhausted — never billed usage
+# itself, that's always the real usage the CLI reports back.
+def estimate_chars_per_token() -> int:
+    return int(_REVIEW_CONFIG.get("estimateCharsPerToken", 3))
+
+
+def estimate_reserve_tokens() -> int:
+    return int(_REVIEW_CONFIG.get("estimateReserveTokens", 4_000))
+
+
+# Total character cap across all linked PRs' diffs combined (reviews.py's
+# _build_linked_context), so a huge linked PR can't blow up the prompt this gets
+# appended to — truncated rather than dropped.
+def linked_context_char_cap() -> int:
+    return int(_REVIEW_CONFIG.get("linkedContextCharCap", 20_000))
+
+
+# Bare repo names (not "owner/repo") this org's PRs can come from, used by
+# claude._classify_frontend to resolve the .js/.ts ambiguity when a repo isn't
+# unambiguous from its own name. Config, not code, since this list changes as repos are
+# added/renamed — an unlisted repo still falls back to the "front" substring guess.
+def frontend_repo_names() -> set[str]:
+    names = _REVIEW_CONFIG.get("frontendRepoNames")
+    return set(names) if isinstance(names, list) else _DEFAULT_FRONTEND_REPO_NAMES
+
+
+def backend_repo_names() -> set[str]:
+    names = _REVIEW_CONFIG.get("backendRepoNames")
+    return set(names) if isinstance(names, list) else _DEFAULT_BACKEND_REPO_NAMES
+
+
+# Fallback used only if review_config.json is missing/unreadable/malformed or omits
+# these keys — same rationale as _DEFAULT_CHECKLIST_ITEMS below.
+_DEFAULT_FRONTEND_REPO_NAMES = {
+    "gfs-saas-agent-portal-front",
+    "gfs-saas-front",
+    "gfs-saas-instantquote-front",
+    "gfs-saas-policyholder-portal-front",
+    "odyssey-charts-ui",
+    "odyssey-shared-ui",
+}
+
+_DEFAULT_BACKEND_REPO_NAMES = {
+    "gfs-saas-accounting",
+    "gfs-saas-agent-portal",
+    "gfs-saas-auth",
+    "gfs-saas-claim",
+    "gfs-saas-core",
+    "gfs-saas-forms",
+    "gfs-saas-infra",
+    "gfs-saas-instantquote",
+    "gfs-saas-odyssey-api",
+    "gfs-saas-policy",
+    "gfs-saas-producer",
+    "gfs-saas-routeql",
+    "job-tracker",
+    "odyssey-frontdoor",
+    "taurus-api-testing",
+    "taurus-reports-service",
+}
 
 
 # Fallback used only if review_config.json is missing/unreadable/malformed, so the app
