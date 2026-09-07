@@ -7,9 +7,10 @@ import { formatTokenCount, totalTokens } from "../lib/formatUsage";
 
 const NAV_ITEMS = [{ to: "/", label: "Assigned PRs", end: true, icon: ListChecks }];
 
-// Running total across every review ever run (data/db.json's reviews, each carrying
-// the cost/tokens the claude CLI itself reported) — a lightweight GET /api/usage sum,
-// not a separately-maintained counter, so it can never drift from the review records.
+// Running total across today's reviews only (data/db.json's reviews, each carrying the
+// cost/tokens the claude CLI itself reported) — a lightweight GET /api/usage sum scoped
+// server-side to the local calendar day, so it clears on its own at midnight instead of
+// needing an explicit reset, and can never drift from the review records.
 function UsageSummary() {
   const [usage, setUsage] = useState(null);
 
@@ -20,7 +21,7 @@ function UsageSummary() {
   if (!usage || usage.reviewCount === 0) return null;
 
   const title = [
-    `${usage.reviewCount} review${usage.reviewCount === 1 ? "" : "s"} total`,
+    `${usage.reviewCount} review${usage.reviewCount === 1 ? "" : "s"} today`,
     `Input: ${usage.inputTokens.toLocaleString()}`,
     `Output: ${usage.outputTokens.toLocaleString()}`,
     `Cache read: ${usage.cacheReadInputTokens.toLocaleString()}`,

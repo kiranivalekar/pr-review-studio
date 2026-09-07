@@ -1,3 +1,4 @@
+import datetime
 import json
 import logging
 import random
@@ -289,8 +290,6 @@ async def push_review(review_id: str, body: PushBody) -> dict[str, Any]:
 
 
 def _iso_now() -> str:
-    import datetime
-
     return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
@@ -404,9 +403,26 @@ async def batch_review(body: BatchReviewBody) -> dict[str, Any]:
     return {"results": results}
 
 
+# Whether a review's createdAt (stored UTC, see _iso_now) falls on today's date in the
+# server's local timezone — so the sidebar usage counter reflects "today" as the person
+# actually using this local, single-user app would read it, not the storage timezone.
+def _created_today(created_at: str | None) -> bool:
+    if not created_at:
+        return False
+
+    try:
+        created = datetime.datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+
+    return created.astimezone().date() == datetime.datetime.now().astimezone().date()
+
+
 @router.get("/usage")
 def get_usage() -> dict[str, Any]:
-    reviews = db.list_reviews()
+    # Derived from today's reviews only, not stored separately — the count naturally
+    # "clears" at local midnight instead of needing an explicit reset.
+    reviews = [r for r in db.list_reviews() if _created_today(r.get("createdAt"))]
     total = claude.sum_usage([r.get("usage") or claude.ZERO_USAGE for r in reviews])
     return {**total, "reviewCount": len(reviews)}
 

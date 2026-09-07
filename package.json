@@ -7,11 +7,12 @@
   ],
   "scripts": {
     "dev": "concurrently -n server,client -c blue,green \"npm run dev:server\" \"npm run dev -w client\"",
-    "dev:server": "server\\.venv\\Scripts\\uvicorn.exe app.main:app --port 3011 --app-dir server",
+    "dev:server": "nodemon --watch server/app --watch server/review_config.json --ext py,json --exec \"server\\.venv\\Scripts\\python.exe -m uvicorn app.main:app --port 3011 --app-dir server\"",
     "dev:client": "npm run dev -w client",
     "build": "npm run build -w client"
   },
   "devDependencies": {
-    "concurrently": "^9.1.0"
+    "concurrently": "^9.1.0",
+    "nodemon": "^3.1.14"
   }
 }
