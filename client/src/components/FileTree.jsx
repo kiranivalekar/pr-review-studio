@@ -15,7 +15,7 @@ function CommentBadge({ count }) {
   return (
     <span
       title={`${count} comment${count === 1 ? "" : "s"}`}
-      className="flex shrink-0 items-center gap-0.5 rounded-full bg-indigo-100 px-1.5 py-0.5 text-[10px] font-medium leading-none text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-400"
+      className="flex shrink-0 items-center gap-0.5 rounded-full bg-brand/12 px-1.5 py-0.5 text-[10px] font-medium leading-none text-brand"
     >
       <MessageSquare size={10} className="shrink-0" />
       {count}
@@ -35,15 +35,15 @@ function TreeFile({ node, depth, active, onSelectFile, commentCount }) {
       style={{ paddingLeft: `${depth * 12 + 8}px` }}
       className={`flex items-center gap-1.5 rounded-md py-1 pr-2 text-xs transition-colors ${
         active
-          ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-400"
-          : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+          ? "bg-brand/10 text-brand"
+          : "text-muted hover:bg-surface-2 dark:text-faint"
       }`}
     >
-      <FileText size={13} className="shrink-0 text-zinc-400" />
+      <FileText size={13} className="shrink-0 text-faint" />
       <span className="min-w-0 flex-1 truncate">{node.name}</span>
       <CommentBadge count={commentCount} />
       {node.binary ? (
-        <span className="shrink-0 text-[10px] text-zinc-400">bin</span>
+        <span className="shrink-0 text-[10px] text-faint">bin</span>
       ) : (
         <span className="flex shrink-0 gap-1 font-mono text-[10px]">
           {node.additions > 0 && <span className="text-emerald-600 dark:text-emerald-400">+{node.additions}</span>}
@@ -62,10 +62,10 @@ function TreeFolder({ node, depth, activePath, onSelectFile, commentCountForFile
       <button
         onClick={() => setOpen((o) => !o)}
         style={{ paddingLeft: `${depth * 12 + 4}px` }}
-        className="flex w-full items-center gap-1 rounded-md py-1 pr-2 text-left text-xs font-medium text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+        className="flex w-full items-center gap-1 rounded-md py-1 pr-2 text-left text-xs font-medium text-muted hover:bg-surface-2 dark:text-faint"
       >
         {open ? <ChevronDown size={12} className="shrink-0" /> : <ChevronRight size={12} className="shrink-0" />}
-        <Folder size={13} className="shrink-0 text-zinc-400" />
+        <Folder size={13} className="shrink-0 text-faint" />
         <span className="min-w-0 flex-1 truncate">{node.name}</span>
         {!open && <CommentBadge count={folderCount} />}
       </button>
@@ -101,7 +101,7 @@ function TreeFolder({ node, depth, activePath, onSelectFile, commentCountForFile
 export function FileTree({ tree, activePath, onSelectFile, commentCountForFile = () => 0 }) {
   return (
     <Card className="flex max-h-[calc(100vh-8rem)] flex-col gap-0.5 overflow-y-auto p-2">
-      <div className="px-2 pb-1.5 text-xs font-semibold text-zinc-500 dark:text-zinc-400">
+      <div className="px-2 pb-1.5 text-xs font-semibold text-muted">
         Files changed
       </div>
       {tree.map((node) =>

@@ -1,7 +1,7 @@
 export function Input({ className = "", ...props }) {
   return (
     <input
-      className={`rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder:text-zinc-500 ${className}`}
+      className={`h-9 rounded-xl border border-hairline bg-surface-2 px-3 text-sm text-ink transition-[border-color,box-shadow,background] duration-300 placeholder:text-faint hover:border-hairline-strong focus:border-brand focus:bg-surface focus:outline-none focus:ring-4 focus:ring-brand/20 ${className}`}
       {...props}
     />
   );

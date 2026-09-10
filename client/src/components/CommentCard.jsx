@@ -25,14 +25,18 @@ export function CommentCard({
   const pushed = comment.state === "pushed";
   const locked = dismissed || pushed;
 
-  useEffect(() => setText(comment.text), [comment.text]);
-  useEffect(() => setSuggestion(comment.suggestion ?? ""), [comment.suggestion]);
+  useEffect(() => {
+    setText(comment.text);
+  }, [comment.text]);
+  useEffect(() => {
+    setSuggestion(comment.suggestion ?? "");
+  }, [comment.suggestion]);
 
   return (
     <Card className={`p-4 ${dismissed ? "opacity-50" : ""}`}>
       <div className="flex items-center justify-between gap-3">
         {showLocation ? (
-          <span className="min-w-0 break-all font-mono text-xs text-zinc-500 dark:text-zinc-400">
+          <span className="min-w-0 break-all font-mono text-xs text-muted">
             {comment.file}
             {comment.line ? `:${comment.line}` : ""}
           </span>
@@ -46,14 +50,14 @@ export function CommentCard({
               checked={selected}
               onChange={(e) => onSelectChange?.(e.target.checked)}
               title="Include in next push to GitHub"
-              className="h-3.5 w-3.5 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500 dark:border-zinc-600"
+              className="h-3.5 w-3.5 rounded border-hairline text-brand focus:ring-brand"
             />
           )}
           <select
             value={comment.severity}
             disabled={locked}
             onChange={(e) => onUpdate({ severity: e.target.value })}
-            className={`rounded-full border-0 px-2 py-0.5 text-xs font-medium capitalize ring-1 ring-inset focus:outline-none focus:ring-2 focus:ring-indigo-500/40 disabled:cursor-not-allowed ${BADGE_VARIANTS[comment.severity]}`}
+            className={`rounded-full border-0 px-2 py-0.5 text-xs font-medium capitalize ring-1 ring-inset focus:outline-none focus:ring-2 focus:ring-brand/40 disabled:cursor-not-allowed ${BADGE_VARIANTS[comment.severity]}`}
           >
             {SEVERITIES.map((s) => (
               <option key={s} value={s}>
@@ -77,7 +81,7 @@ export function CommentCard({
 
       {editingText ? (
         <Textarea
-          className="mt-2 w-full min-h-[2.5rem] rounded-lg border border-zinc-300 bg-white p-2 text-sm text-zinc-900 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+          className="mt-2 w-full min-h-[2.5rem] rounded-lg border border-hairline bg-white p-2 text-sm text-ink focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/20 disabled:cursor-not-allowed disabled:opacity-60"
           value={text}
           autoFocus
           disabled={locked}
@@ -90,7 +94,7 @@ export function CommentCard({
       ) : (
         <div
           className={`group/text relative mt-2 rounded-lg border border-transparent p-2 ${
-            locked ? "" : "cursor-text hover:border-zinc-200 dark:hover:border-zinc-800"
+            locked ? "" : "cursor-text hover:border-hairline-strong"
           }`}
           onClick={(e) => {
             // Let links inside the rendered markdown navigate instead of entering edit mode,
@@ -105,7 +109,7 @@ export function CommentCard({
               type="button"
               onClick={() => setEditingText(true)}
               title="Edit"
-              className="absolute right-1.5 top-1.5 rounded p-1 text-zinc-400 opacity-0 hover:bg-zinc-200/70 hover:text-zinc-700 group-hover/text:opacity-100 dark:hover:bg-zinc-700 dark:hover:text-zinc-200"
+              className="absolute right-1.5 top-1.5 rounded p-1 text-faint opacity-0 hover:bg-surface-2 hover:text-ink group-hover/text:opacity-100"
             >
               <Pencil size={12} />
             </button>
@@ -114,8 +118,8 @@ export function CommentCard({
       )}
 
       {comment.suggestion != null && (
-        <div className="mt-2 overflow-hidden rounded-lg border border-zinc-300 dark:border-zinc-700">
-          <div className="flex items-center justify-between gap-2 border-b border-zinc-300 bg-zinc-50 px-3 py-1 text-xs font-medium text-zinc-600 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+        <div className="mt-2 overflow-hidden rounded-lg border border-hairline">
+          <div className="flex items-center justify-between gap-2 border-b border-hairline bg-surface-2 px-3 py-1 text-xs font-medium text-muted">
             <span className="flex items-center gap-1.5">
               <Lightbulb size={12} className="text-amber-500" />
               Suggested change
@@ -128,7 +132,7 @@ export function CommentCard({
                 setTimeout(() => setCopied(false), 1500);
               }}
               title="Copy suggestion"
-              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-zinc-500 hover:bg-zinc-200/70 hover:text-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-700 dark:hover:text-zinc-200"
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted hover:bg-surface-2 hover:text-ink"
             >
               {copied ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
               {copied ? "Copied" : "Copy"}
@@ -136,12 +140,12 @@ export function CommentCard({
           </div>
 
           {originalContent != null && viewMode === "split" ? (
-            <div className="grid grid-cols-2 divide-x divide-zinc-300 dark:divide-zinc-700">
-              <pre className="m-0 overflow-x-auto whitespace-pre bg-red-50 p-2 font-mono text-xs leading-relaxed text-zinc-800 dark:bg-red-500/10 dark:text-zinc-200">
+            <div className="grid grid-cols-2 divide-x divide-hairline">
+              <pre className="m-0 overflow-x-auto whitespace-pre bg-red-50 p-2 font-mono text-xs leading-relaxed text-ink dark:bg-red-500/10">
                 {originalContent}
               </pre>
               <Textarea
-                className="w-full min-h-[2rem] overflow-x-auto whitespace-pre bg-emerald-50 p-2 font-mono text-xs leading-relaxed text-zinc-900 focus:outline-none disabled:cursor-not-allowed dark:bg-emerald-500/10 dark:text-zinc-100"
+                className="w-full min-h-[2rem] overflow-x-auto whitespace-pre bg-emerald-50 p-2 font-mono text-xs leading-relaxed text-ink focus:outline-none disabled:cursor-not-allowed dark:bg-emerald-500/10"
                 value={suggestion}
                 disabled={locked}
                 onChange={(e) => setSuggestion(e.target.value)}
@@ -153,13 +157,13 @@ export function CommentCard({
           ) : (
             <div className="flex flex-col">
               {originalContent != null && (
-                <pre className="m-0 overflow-x-auto whitespace-pre bg-red-50 px-2 py-1 font-mono text-xs leading-relaxed text-zinc-800 dark:bg-red-500/10 dark:text-zinc-200">
+                <pre className="m-0 overflow-x-auto whitespace-pre bg-red-50 px-2 py-1 font-mono text-xs leading-relaxed text-ink dark:bg-red-500/10">
                   <span className="select-none text-red-400">- </span>
                   {originalContent}
                 </pre>
               )}
               <Textarea
-                className="w-full min-h-[2rem] overflow-x-auto whitespace-pre bg-emerald-50 p-2 font-mono text-xs leading-relaxed text-zinc-900 focus:outline-none disabled:cursor-not-allowed dark:bg-emerald-500/10 dark:text-zinc-100"
+                className="w-full min-h-[2rem] overflow-x-auto whitespace-pre bg-emerald-50 p-2 font-mono text-xs leading-relaxed text-ink focus:outline-none disabled:cursor-not-allowed dark:bg-emerald-500/10"
                 value={suggestion}
                 disabled={locked}
                 onChange={(e) => setSuggestion(e.target.value)}

@@ -34,8 +34,8 @@ function CodeBlock({ language, code }) {
   const [copied, setCopied] = useState(false);
 
   return (
-    <div className="my-2 overflow-hidden rounded-lg border border-zinc-300 dark:border-zinc-700">
-      <div className="flex items-center justify-between border-b border-zinc-300 bg-zinc-50 px-2.5 py-1 text-[11px] font-medium text-zinc-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400">
+    <div className="my-2 overflow-hidden rounded-lg border border-hairline">
+      <div className="flex items-center justify-between border-b border-hairline bg-surface-2 px-2.5 py-1 text-[11px] font-medium text-muted">
         <span className="font-mono">{language || "text"}</span>
         <button
           type="button"
@@ -44,7 +44,7 @@ function CodeBlock({ language, code }) {
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
           }}
-          className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-zinc-200/70 hover:text-zinc-700 dark:hover:bg-zinc-700 dark:hover:text-zinc-200"
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-surface-2 hover:text-ink"
         >
           {copied ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
           {copied ? "Copied" : "Copy"}
@@ -68,7 +68,7 @@ function CodeBlock({ language, code }) {
 // prompted to write), inline `code` gets a plain pill, everything else is plain prose.
 export function Markdown({ children }) {
   return (
-    <div className="markdown-body text-sm leading-relaxed text-zinc-800 dark:text-zinc-200">
+    <div className="markdown-body text-sm leading-relaxed text-ink">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -82,7 +82,7 @@ export function Markdown({ children }) {
             const text = String(children).replace(/\n$/, "");
             if (!match) {
               return (
-                <code className="rounded bg-zinc-100 px-1 py-0.5 font-mono text-[0.85em] text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200">
+                <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.85em] text-ink">
                   {text}
                 </code>
               );
@@ -99,7 +99,7 @@ export function Markdown({ children }) {
             return <ol className="mb-2 list-decimal pl-5 last:mb-0">{children}</ol>;
           },
           strong({ children }) {
-            return <strong className="font-semibold text-zinc-900 dark:text-zinc-100">{children}</strong>;
+            return <strong className="font-semibold text-ink">{children}</strong>;
           },
           a({ children, href }) {
             return (
@@ -107,7 +107,7 @@ export function Markdown({ children }) {
                 href={href}
                 target="_blank"
                 rel="noreferrer"
-                className="text-indigo-600 hover:underline dark:text-indigo-400"
+                className="text-brand hover:underline"
               >
                 {children}
               </a>

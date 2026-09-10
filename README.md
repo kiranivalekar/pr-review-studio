@@ -77,7 +77,8 @@ Local clones, linked PRs, dependency manifests and PHPStan config all feed the r
 
 | | Feature | What you get |
 |:--:|---|---|
-| 📥 | **Assigned PRs** | Every PR where you're a requested reviewer, plus any added by URL — grouped into collapsible per-repo accordion sections with `unreviewed` / `reviewed` / `commented` status and diffstat gutters. |
+| 🏠 | **Landing page** | A proper home screen at `/` — live stats from this install, an animated walkthrough of a review, and a **Let's start reviewing PRs** button straight into the queue. |
+| 📥 | **Review queue** | Every PR where you're a requested reviewer, plus any added by URL — grouped into collapsible per-repo accordion sections with search, status filter, `unreviewed` / `reviewed` / `commented` badges and diffstat gutters. |
 | 🔍 | **GitHub-style diff** | Unified **and** split view, a collapsible file tree with `+N`/`-N` counts, per-file collapse, and *"show more lines"* hunk expansion in both directions. |
 | 💬 | **Inline AI comments** | Findings render **on the exact line they target**, with severity (`nit` · `suggestion` · `issue` · `blocking`) and a green *Suggested change* block. Commented lines get their own accent highlight. |
 | ✏️ | **Fully editable** | Rewrite the text, change the severity, tweak the suggested code, or dismiss a comment — nothing is published until you say so. |
@@ -90,7 +91,7 @@ Local clones, linked PRs, dependency manifests and PHPStan config all feed the r
 | 📦 | **Dependency awareness** | Reads `package.json` / `composer.json` at the PR's head SHA so comments reason about your *actual* versions — and flag code reinventing a library you already ship. |
 | 🐘 | **PHPStan awareness** | Picks up `phpstan.neon(.dist)` so PHP comments match your enforced level and ignored rules instead of a generic stricter standard. |
 | 📊 | **Usage meter** | Today's token spend and review count, derived from the day's runs — naturally resets at local midnight, no reset button needed. |
-| 🌗 | **Dark / light / system** | Theme toggle persisted in `localStorage`, following the OS by default. |
+| 🌗 | **Designed for dark** | A semantic token system (one palette per theme, zero `dark:` variants in components), aurora backdrop, motion throughout — and a single global `prefers-reduced-motion` guard that turns all of it off. |
 | 📂 | **Safe worktrees** | Deep reviews run inside a disposable `git worktree` of the PR's head ref — your clone's branch and uncommitted work are never touched. |
 
 ---
@@ -233,7 +234,7 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    UI["🖥️&nbsp; <b>React + Vite UI</b><br/><i>Assigned PRs · Review</i><br/>:5173"]
+    UI["🖥️&nbsp; <b>React + Vite UI</b><br/><i>Home · Queue · Review</i><br/>:5173"]
     API["⚡&nbsp; <b>FastAPI backend</b><br/><i>server/app · uvicorn</i><br/>:3011"]
     GH["🐙&nbsp; <b>GitHub REST API</b><br/><i>PAT · repo scope</i>"]
     CC["🤖&nbsp; <b>claude CLI</b><br/><i>headless -p · JSON schema</i>"]
@@ -288,7 +289,7 @@ flowchart TD
 
 </details>
 
-**Routes:** `/` → Assigned PRs &nbsp;·&nbsp; `/review/:owner/:repo/:number` → the Review screen.
+**Routes:** `/` → Home &nbsp;·&nbsp; `/prs` → the review queue &nbsp;·&nbsp; `/review/:owner/:repo/:number` → the Review screen.
 
 ---
 

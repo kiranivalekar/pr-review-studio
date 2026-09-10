@@ -15,13 +15,13 @@ const LINE_BG = {
 const LINE_PREFIX = { add: "+", del: "-", context: " " };
 
 const LINE_NUM_CLASS =
-  "w-10 select-none border-r border-zinc-200 px-2 text-right text-zinc-400 dark:border-zinc-800 dark:text-zinc-600";
+  "w-10 select-none border-r border-hairline px-2 text-right text-faint dark:text-muted";
 
 function CommentThreadRow({ colSpan, entries, viewMode, onCommentUpdate, selectedIds, onSelectChange }) {
   if (entries.length === 0) return null;
   return (
     <tr>
-      <td colSpan={colSpan} className="border-t border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950">
+      <td colSpan={colSpan} className="border-t border-hairline bg-white p-3">
         <div className="flex flex-col gap-2 font-sans">
           {entries.map(({ comment, originalContent }) => (
             <CommentCard
@@ -52,11 +52,11 @@ function UnifiedLineRows({ filePath, line, matcher, onCommentUpdate, selectedIds
         <td className={LINE_NUM_CLASS}>{line.oldLine ?? ""}</td>
         <td className={LINE_NUM_CLASS}>{line.newLine ?? ""}</td>
         <td
-          className={`whitespace-pre-wrap break-all px-2 py-0.5 text-zinc-800 dark:text-zinc-200 ${
+          className={`whitespace-pre-wrap break-all px-2 py-0.5 text-ink ${
             highlighted ? "border-l-2 border-amber-400 bg-amber-50/60 dark:border-amber-500 dark:bg-amber-500/10" : ""
           }`}
         >
-          <span className="select-none text-zinc-400">{LINE_PREFIX[line.type]}</span>
+          <span className="select-none text-faint">{LINE_PREFIX[line.type]}</span>
           {highlighted && (
             <MessageSquare size={10} className="mr-1 inline-block shrink-0 align-text-top text-amber-500" />
           )}
@@ -79,7 +79,7 @@ function UnifiedHunk({ filePath, hunk, matcher, onCommentUpdate, selectedIds, on
   return (
     <>
       <tr>
-        <td colSpan={3} className="bg-indigo-50/60 px-3 py-1 text-indigo-600 dark:bg-indigo-500/10 dark:text-indigo-400">
+        <td colSpan={3} className="bg-brand/8 px-3 py-1 text-brand">
           {hunk.header}
         </td>
       </tr>
@@ -104,7 +104,7 @@ function splitCell(line, side, highlighted) {
     return (
       <>
         <td className={LINE_NUM_CLASS} />
-        <td className="bg-zinc-50 px-2 py-0.5 dark:bg-zinc-900/40" />
+        <td className="bg-surface-2 px-2 py-0.5" />
       </>
     );
   }
@@ -114,7 +114,7 @@ function splitCell(line, side, highlighted) {
     <>
       <td className={LINE_NUM_CLASS}>{side === "left" ? line.oldLine : line.newLine}</td>
       <td
-        className={`whitespace-pre-wrap break-all px-2 py-0.5 text-zinc-800 dark:text-zinc-200 ${active ? tint : ""} ${
+        className={`whitespace-pre-wrap break-all px-2 py-0.5 text-ink ${active ? tint : ""} ${
           highlighted ? "border-l-2 border-amber-400 bg-amber-50/60 dark:border-amber-500 dark:bg-amber-500/10" : ""
         }`}
       >
@@ -149,7 +149,7 @@ function splitRowEntries(matcher, filePath, row) {
 function SplitCommentCell({ entries, onCommentUpdate, selectedIds, onSelectChange }) {
   if (entries.length === 0) return <td colSpan={2} />;
   return (
-    <td colSpan={2} className="border-t border-zinc-200 bg-white p-3 align-top dark:border-zinc-800 dark:bg-zinc-950">
+    <td colSpan={2} className="border-t border-hairline bg-white p-3 align-top">
       <div className="flex flex-col gap-2 font-sans">
         {entries.map(({ comment, originalContent }) => (
           <CommentCard
@@ -204,7 +204,7 @@ function SplitHunk({ filePath, hunk, matcher, onCommentUpdate, selectedIds, onSe
   return (
     <>
       <tr>
-        <td colSpan={4} className="bg-indigo-50/60 px-3 py-1 text-indigo-600 dark:bg-indigo-500/10 dark:text-indigo-400">
+        <td colSpan={4} className="bg-brand/8 px-3 py-1 text-brand">
           {hunk.header}
         </td>
       </tr>
@@ -239,14 +239,14 @@ function GapSeparatorRow({ colSpan, gap, remaining, loading, error, onExpand }) 
 
   return (
     <tr>
-      <td colSpan={colSpan} className="border-y border-zinc-200 bg-zinc-50 px-2 py-1 dark:border-zinc-800 dark:bg-zinc-900">
-        <div className="flex items-center gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+      <td colSpan={colSpan} className="border-y border-hairline bg-surface-2 px-2 py-1">
+        <div className="flex items-center gap-1 text-xs text-muted">
           {gap.kind === "mid" && (
             <button
               onClick={() => onExpand("down")}
               disabled={loading}
               title="Show more lines below the hunk above"
-              className="rounded p-0.5 hover:bg-zinc-200 disabled:opacity-50 dark:hover:bg-zinc-700"
+              className="rounded p-0.5 hover:bg-surface-2 disabled:opacity-50"
             >
               <ChevronDown size={14} />
             </button>
@@ -254,7 +254,7 @@ function GapSeparatorRow({ colSpan, gap, remaining, loading, error, onExpand }) 
           <button
             onClick={() => onExpand(gap.kind === "mid" ? "down" : gap.kind === "lead" ? "up" : "down")}
             disabled={loading}
-            className="flex-1 rounded px-1.5 py-0.5 text-left font-mono hover:bg-zinc-200 disabled:opacity-50 dark:hover:bg-zinc-700"
+            className="flex-1 rounded px-1.5 py-0.5 text-left font-mono hover:bg-surface-2 disabled:opacity-50"
           >
             {loading && <Loader2 size={12} className="mr-1 inline animate-spin" />}
             {label}
@@ -264,7 +264,7 @@ function GapSeparatorRow({ colSpan, gap, remaining, loading, error, onExpand }) 
               onClick={() => onExpand("up")}
               disabled={loading}
               title="Show more lines above the hunk below"
-              className="rounded p-0.5 hover:bg-zinc-200 disabled:opacity-50 dark:hover:bg-zinc-700"
+              className="rounded p-0.5 hover:bg-surface-2 disabled:opacity-50"
             >
               <ChevronUp size={14} />
             </button>
@@ -442,13 +442,13 @@ export function DiffView({ files, matcher, onCommentUpdate, selectedIds, onSelec
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-end gap-1 self-end rounded-lg border border-zinc-200 p-0.5 dark:border-zinc-800">
+      <div className="flex items-center justify-end gap-1 self-end rounded-lg border border-hairline p-0.5">
         <button
           onClick={() => setMode("unified")}
           className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
             mode === "unified"
-              ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-              : "text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+              ? "bg-ink text-canvas"
+              : "text-muted hover:bg-surface-2"
           }`}
         >
           <Rows3 size={13} />
@@ -458,8 +458,8 @@ export function DiffView({ files, matcher, onCommentUpdate, selectedIds, onSelec
           onClick={() => setMode("split")}
           className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
             mode === "split"
-              ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-              : "text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+              ? "bg-ink text-canvas"
+              : "text-muted hover:bg-surface-2"
           }`}
         >
           <Columns2 size={13} />
@@ -474,17 +474,17 @@ export function DiffView({ files, matcher, onCommentUpdate, selectedIds, onSelec
           <div
             key={file.path}
             id={fileElementId(file.path)}
-            className="scroll-mt-4 overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800"
+            className="scroll-mt-4 overflow-hidden rounded-xl border border-hairline"
           >
             <button
               onClick={() => toggleFileCollapsed(file.path)}
-              className="flex w-full items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-left font-mono text-xs text-zinc-700 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              className="flex w-full items-center justify-between gap-3 border-b border-hairline bg-surface-2 px-3 py-2 text-left font-mono text-xs text-ink hover:bg-surface-2"
             >
               <span className="flex min-w-0 items-center gap-1.5">
                 {collapsed ? (
-                  <ChevronRight size={13} className="shrink-0 text-zinc-400" />
+                  <ChevronRight size={13} className="shrink-0 text-faint" />
                 ) : (
-                  <ChevronDown size={13} className="shrink-0 text-zinc-400" />
+                  <ChevronDown size={13} className="shrink-0 text-faint" />
                 )}
                 <span className="min-w-0 break-all">{file.path}</span>
               </span>
@@ -496,7 +496,7 @@ export function DiffView({ files, matcher, onCommentUpdate, selectedIds, onSelec
 
             {!collapsed &&
               (file.binary ? (
-                <div className="p-3 text-xs text-zinc-500 dark:text-zinc-400">Binary file not shown</div>
+                <div className="p-3 text-xs text-muted">Binary file not shown</div>
               ) : (
                 <table className="w-full table-fixed border-collapse font-mono text-xs">
                   <colgroup>
