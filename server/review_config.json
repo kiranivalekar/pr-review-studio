@@ -1,8 +1,8 @@
 {
   "reviewConcurrency": 4,
   "reviewModel": "claude-sonnet-5",
-  "batchMaxFiles": 7,
-  "batchMaxDiffTokens": 20000,
+  "batchMaxFiles": 20,
+  "batchMaxDiffTokens": 60000,
   "estimateCharsPerToken": 3,
   "estimateReserveTokens": 4000,
   "linkedContextCharCap": 20000,

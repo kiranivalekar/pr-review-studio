@@ -297,6 +297,61 @@ button click — this is the seam future auto-review hooks into (see below).
   `line`/`path` doesn't resolve against `commit_id`'s diff, the whole push
   request fails (not just that one comment). Not yet hit in practice; if it
   becomes an issue, per-comment retry/skip is the fix, not before.
+- **Prompt caching does not work through the `claude` CLI — measured.** The
+  cost model in `server/app/claude.py` assumed `--system-prompt-file` put the
+  large static review prompt behind a reusable cache boundary. It does not.
+  Verified empirically on this machine (`claude-sonnet-5`, `claude -p`): the
+  CLI exposes only **one** reusable cache breakpoint, ~1,442 tokens into its
+  own preamble; our system prompt is cached in the *same block as the piped
+  user turn*, so a differing diff invalidates it. Three calls sharing one
+  byte-identical system-prompt file but different diffs each reported
+  `cacheCreate=8744 / cacheRead=1442` — the primed entry is never read back.
+  Two consequences: (1) the cache-priming phase in `run_review()` buys
+  nothing (latency-only overhead; left in place because it becomes correct
+  the moment the transport changes — see below); (2) because cache creation
+  bills at a premium over ordinary input (1.25x at the 5-minute TTL, 2x at
+  the 1-hour TTL), the caching path costs **more** than sending the same
+  tokens uncached. Separately, ~8,752 tokens of every call is Claude Code
+  *harness* scaffolding this workload never uses (measured with a ~10-token
+  system prompt and `--tools ""`), against only ~3,554 tokens of actual
+  review prompt — ~71% overhead — and `--tools "Read,Grep,Glob"` (deep mode)
+  adds ~3,157 more per call. The real fix is a **transport change**: call the
+  Messages API directly with an explicit `cache_control` breakpoint after the
+  system prompt and before the diff, which deletes the harness cost and makes
+  the review prompt a genuine reusable prefix (read at 0.1x) while the
+  varying diff bills as plain input. That conflicts with the "never use
+  `ANTHROPIC_API_KEY`, shell out to the logged-in CLI" rule in Auth model
+  above, so it is a deliberate decision — don't switch silently. What *was*
+  fixed in the meantime: per-PR context (dependency manifest, PHPStan config,
+  linked PRs, curated files) is no longer concatenated onto the system prompt
+  (`_run_batch_review`, `_run_summary`) — it rides in the user turn, which
+  keeps the system prompt byte-identical across PRs (a prerequisite for the
+  transport fix, and it stops `_system_prompt_file_for()` writing a fresh
+  temp file per PR forever).
+
+- **`estimateReserveTokens` was charged per FILE, not per call — fixed.** It
+  reserves room for the model's *answer*, and a call produces one answer no
+  matter how many files it covers, but `_estimate_chunk_tokens()` baked it
+  into every chunk's estimate and `_group_into_batches()` charged the sum
+  against `batchMaxDiffTokens` — a knob whose own name and docs say it
+  measures *diff* size. With the old defaults (4,000 reserve, 20,000 cap)
+  that capped a batch at **4 files** however tiny they were, making
+  `batchMaxFiles: 7` dead config and forcing ~75% more `claude` calls than
+  intended. Since each call carries a fixed ~10,186-token overhead that the
+  CLI cannot cache away (see the entry above), this was the single largest
+  avoidable cost in the review path. Split into
+  `_estimate_chunk_diff_tokens()` (diff only) and `_estimate_batch_tokens()`
+  (adds the reserve once per batch); caps raised to
+  `batchMaxFiles: 20` / `batchMaxDiffTokens: 60000` (Sonnet 5 has a 1M
+  context, so 20k was extremely conservative). **Measured on 20 identical
+  synthetic files: 5 calls x 4 files = 145,363 tokens / $0.8892, versus
+  1 call x 20 files = 38,078 tokens / $0.3306 — a 74% token cut.** The
+  tradeoff is real and worth knowing: the split run returned 25 comments to
+  the batched run's 20, i.e. smaller batches surface more *secondary*
+  findings per file. Both runs caught the primary bug in all 20 files. If
+  review depth matters more than cost on a given repo, lower
+  `batchMaxFiles` — it is now a knob that actually does something.
+
 - **Server port is 3011, not the more obvious 3001.** On this dev machine,
   port 3001 got stuck in a state where `netstat`/`Get-NetTCPConnection`
   report a listener on it (and it answers real HTTP responses) but the
