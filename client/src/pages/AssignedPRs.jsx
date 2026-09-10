@@ -1,6 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ChevronDown, ChevronRight, ExternalLink, Loader2, Play, Plus, RefreshCw, Trash2 } from "lucide-react";
+import {
+  ChevronRight,
+  ExternalLink,
+  GitPullRequestArrow,
+  Inbox,
+  Loader2,
+  Play,
+  Plus,
+  RefreshCw,
+  Search,
+  Trash2,
+  TriangleAlert,
+} from "lucide-react";
 import { fetchPRs, addPR, removePR, batchReviewRepo } from "../api";
 import { getCachedPrs, setCachedPrs } from "../lib/prsCache";
 import { DiffStat } from "../components/DiffStat";
@@ -8,6 +20,10 @@ import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Badge } from "../components/ui/Badge";
 import { Input } from "../components/ui/Input";
+import { Segmented } from "../components/ui/Segmented";
+import { Skeleton } from "../components/ui/Skeleton";
+import { PageHeader } from "../components/ui/PageHeader";
+import { EmptyState } from "../components/ui/EmptyState";
 
 // Groups PRs by repo, ordering the groups themselves by repo name descending (Z-A).
 function groupByRepo(prs) {
@@ -21,6 +37,38 @@ function groupByRepo(prs) {
     .sort((a, b) => b.repo.localeCompare(a.repo));
 }
 
+const STATUS_FILTERS = [
+  { value: "all", label: "All" },
+  { value: "unreviewed", label: "Unreviewed" },
+  { value: "reviewed", label: "Reviewed" },
+  { value: "commented", label: "Commented" },
+];
+
+// Relative time reads faster than a date when scanning a queue for what's gone stale.
+function relativeTime(iso) {
+  const then = new Date(iso);
+  const days = Math.floor((Date.now() - then) / 86_400_000);
+  if (days < 1) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 30) return `${days}d ago`;
+  return then.toLocaleDateString();
+}
+
+function LoadingRows() {
+  return (
+    <Card className="flex flex-col gap-3 p-4">
+      {Array.from({ length: 4 }).map((_, i) => (
+        <div key={i} className="flex items-center gap-4" style={{ opacity: 1 - i * 0.18 }}>
+          <Skeleton className="size-4 rounded-md" />
+          <Skeleton className="h-4 flex-1" />
+          <Skeleton className="h-4 w-24" />
+          <Skeleton className="h-5 w-16 rounded-full" />
+        </div>
+      ))}
+    </Card>
+  );
+}
+
 export function AssignedPRs() {
   const navigate = useNavigate();
   const [prs, setPrs] = useState(getCachedPrs() ?? []);
@@ -31,6 +79,8 @@ export function AssignedPRs() {
   const [collapsedRepos, setCollapsedRepos] = useState(new Set());
   const [selectedForBatch, setSelectedForBatch] = useState(new Set());
   const [batchingRepo, setBatchingRepo] = useState(null);
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
 
   function load() {
     setLoading(true);
@@ -50,7 +100,33 @@ export function AssignedPRs() {
     if (getCachedPrs() === null) load();
   }, []);
 
-  const repoGroups = useMemo(() => groupByRepo(prs), [prs]);
+  // Search and status narrow the list before grouping, so a repo with no
+  // matches drops out of the accordion entirely instead of rendering empty.
+  const visiblePrs = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return prs.filter((pr) => {
+      if (statusFilter !== "all" && pr.status !== statusFilter) return false;
+      if (!q) return true;
+      return (
+        pr.title.toLowerCase().includes(q) ||
+        pr.repo.toLowerCase().includes(q) ||
+        pr.author.toLowerCase().includes(q) ||
+        String(pr.number).includes(q)
+      );
+    });
+  }, [prs, query, statusFilter]);
+
+  const repoGroups = useMemo(() => groupByRepo(visiblePrs), [visiblePrs]);
+  const filtering = query.trim() !== "" || statusFilter !== "all";
+
+  const counts = useMemo(
+    () => ({
+      total: prs.length,
+      repos: new Set(prs.map((p) => p.repo)).size,
+      unreviewed: prs.filter((p) => p.status === "unreviewed").length,
+    }),
+    [prs]
+  );
 
   // Collapsed by default so the user expands only what they need — but only on the
   // very first load: a later refresh shouldn't re-collapse groups they've opened.
@@ -61,6 +137,12 @@ export function AssignedPRs() {
       setCollapsedRepos(new Set(repoGroups.map((g) => g.repo)));
     }
   }, [repoGroups]);
+
+  // While a search is active, showing collapsed groups would hide the very
+  // matches the user is looking for — so filtering implies expanded.
+  function isCollapsed(repo) {
+    return !filtering && collapsedRepos.has(repo);
+  }
 
   function toggleRepo(repo) {
     setCollapsedRepos((prev) => {
@@ -144,187 +226,271 @@ export function AssignedPRs() {
     }
   }
 
-  return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-5">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">Assigned PRs</h1>
-          <p className="mt-0.5 text-sm text-zinc-500 dark:text-zinc-400">
-            Open PRs where your review is requested on GitHub, plus anything you've added manually.
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          {repoGroups.length > 0 && (
-            <button
-              onClick={() =>
-                setCollapsedRepos(
-                  collapsedRepos.size === repoGroups.length
-                    ? new Set()
-                    : new Set(repoGroups.map((g) => g.repo))
-                )
-              }
-              className="text-sm font-medium text-indigo-600 hover:underline dark:text-indigo-400"
-            >
-              {collapsedRepos.size === repoGroups.length ? "Expand all" : "Collapse all"}
-            </button>
-          )}
-          <Button variant="ghost" onClick={load} disabled={loading} title="Refresh">
-            <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
-            Refresh
-          </Button>
-        </div>
-      </div>
+  const allCollapsed = collapsedRepos.size === repoGroups.length && repoGroups.length > 0;
 
-      <Card className="p-4">
-        <form className="flex gap-2" onSubmit={handleAdd}>
+  return (
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        eyebrow="Review queue"
+        icon={GitPullRequestArrow}
+        title="Pull requests waiting on you"
+        description="Open PRs where GitHub has requested your review, plus anything you've added by URL."
+        actions={
+          <>
+            {repoGroups.length > 0 && (
+              <Button
+                variant="ghost"
+                onClick={() =>
+                  setCollapsedRepos(allCollapsed ? new Set() : new Set(repoGroups.map((g) => g.repo)))
+                }
+              >
+                {allCollapsed ? "Expand all" : "Collapse all"}
+              </Button>
+            )}
+            <Button variant="secondary" onClick={load} disabled={loading} title="Re-fetch from GitHub">
+              <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+              Refresh
+            </Button>
+          </>
+        }
+      />
+
+      {/* Queue vitals — the shape of the workload before any row is read. */}
+      {prs.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {[
+            { label: "open", value: counts.total },
+            { label: counts.repos === 1 ? "repo" : "repos", value: counts.repos },
+            { label: "unreviewed", value: counts.unreviewed, accent: true },
+          ].map((chip) => (
+            <span
+              key={chip.label}
+              className={`inline-flex items-center gap-1.5 rounded-full border border-hairline px-3 py-1 text-xs ${
+                chip.accent ? "bg-brand/8 text-ink" : "bg-surface-2 text-muted"
+              }`}
+            >
+              <span className="font-bold tabular-nums">{chip.value}</span>
+              {chip.label}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Controls: add by URL, search, status */}
+      <Card className="flex flex-col gap-3 p-4">
+        <form className="flex flex-wrap gap-2" onSubmit={handleAdd}>
           <Input
             type="url"
-            className="flex-1"
+            className="min-w-64 flex-1"
             placeholder="https://github.com/owner/repo/pull/123"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
           />
-          <Button type="submit" disabled={adding}>
+          <Button type="submit" variant="primary" disabled={adding}>
             {adding ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
             {adding ? "Adding…" : "Add PR"}
           </Button>
         </form>
+
+        <div className="flex flex-wrap items-center gap-2 border-t border-hairline pt-3">
+          <div className="relative min-w-56 flex-1">
+            <Search size={14} className="absolute top-1/2 left-3 -translate-y-1/2 text-faint" />
+            <Input
+              type="search"
+              className="w-full pl-9"
+              placeholder="Filter by title, repo, author or number…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </div>
+          <Segmented
+            options={STATUS_FILTERS}
+            value={statusFilter}
+            onChange={setStatusFilter}
+            size="sm"
+          />
+        </div>
       </Card>
 
       {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-400">
+        <div className="flex animate-slide-down items-start gap-2.5 rounded-xl border border-bad/25 bg-bad/8 px-3.5 py-2.5 text-sm text-bad">
+          <TriangleAlert size={15} className="mt-0.5 shrink-0" />
           {error}
         </div>
       )}
 
-      {loading && (
-        <Card className="flex items-center justify-center gap-2 p-10 text-sm text-zinc-500 dark:text-zinc-400">
-          <Loader2 size={16} className="animate-spin" />
-          Loading…
-        </Card>
-      )}
+      {loading && <LoadingRows />}
 
       {!loading && prs.length === 0 && !error && (
-        <Card className="flex flex-col items-center justify-center gap-1 p-10 text-center">
-          <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Nothing here yet</p>
-          <p className="text-sm text-zinc-500 dark:text-zinc-400">
-            No open PRs currently need your review, and none added manually.
-          </p>
-        </Card>
+        <EmptyState
+          icon={Inbox}
+          title="Nothing here yet"
+          description="No open PRs currently need your review, and none have been added manually."
+        />
+      )}
+
+      {!loading && prs.length > 0 && repoGroups.length === 0 && (
+        <EmptyState
+          icon={Search}
+          title="No matches"
+          description="Nothing in the queue matches that filter."
+          action={
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setQuery("");
+                setStatusFilter("all");
+              }}
+            >
+              Clear filters
+            </Button>
+          }
+        />
       )}
 
       {!loading &&
-        repoGroups.map(({ repo, prs: repoPrs }) => {
-          const collapsed = collapsedRepos.has(repo);
+        repoGroups.map(({ repo, prs: repoPrs }, groupIndex) => {
+          const collapsed = isCollapsed(repo);
           const selectedCount = repoPrs.filter((pr) => selectedForBatch.has(prKey(pr))).length;
           const isBatching = batchingRepo === repo;
+
           return (
-            <Card key={repo} className="overflow-hidden p-0">
-              <div className="flex items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-50 px-4 py-2.5 dark:border-zinc-800 dark:bg-zinc-900">
+            <Card
+              key={repo}
+              className="animate-fade-up overflow-hidden p-0"
+              style={{ animationDelay: `${Math.min(groupIndex, 6) * 60}ms` }}
+            >
+              <div className="flex items-center justify-between gap-3 border-b border-hairline bg-surface-2/70 px-4 py-3 backdrop-blur">
                 <button
                   onClick={() => toggleRepo(repo)}
-                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                  className="group flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                  aria-expanded={!collapsed}
                 >
-                  {collapsed ? (
-                    <ChevronRight size={14} className="shrink-0 text-zinc-400" />
-                  ) : (
-                    <ChevronDown size={14} className="shrink-0 text-zinc-400" />
-                  )}
-                  <span className="truncate font-mono text-sm font-medium text-zinc-900 dark:text-zinc-100">
-                    {repo}
-                  </span>
-                  <span className="shrink-0 text-xs text-zinc-500 dark:text-zinc-400">
-                    {repoPrs.length} PR{repoPrs.length === 1 ? "" : "s"}
+                  <ChevronRight
+                    size={15}
+                    className={`shrink-0 text-faint transition-transform duration-300 group-hover:text-brand ${
+                      collapsed ? "" : "rotate-90"
+                    }`}
+                  />
+                  <span className="truncate font-mono text-sm font-semibold text-ink">{repo}</span>
+                  <span className="shrink-0 rounded-full bg-surface px-2 py-0.5 text-[11px] font-semibold text-muted ring-1 ring-hairline ring-inset">
+                    {repoPrs.length}
                   </span>
                 </button>
                 <Button
-                  variant="ghost"
+                  variant={selectedCount > 0 ? "subtle" : "ghost"}
+                  size="sm"
                   disabled={selectedCount === 0 || (batchingRepo != null && !isBatching)}
                   onClick={() => handleBatchReview(repo, repoPrs)}
                   title={selectedCount === 0 ? "Select PRs below to batch review" : undefined}
                 >
-                  {isBatching ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+                  {isBatching ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
                   {isBatching ? "Reviewing…" : `Batch review${selectedCount > 0 ? ` (${selectedCount})` : ""}`}
                 </Button>
               </div>
 
-              {!collapsed && (
-                <table className="w-full border-collapse text-sm">
-                  <thead>
-                    <tr className="border-b border-zinc-200 text-left text-xs font-medium uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-                      <th className="w-10 px-4 py-2.5" />
-                      <th className="px-4 py-2.5 font-medium">PR</th>
-                      <th className="px-4 py-2.5 font-medium">Author</th>
-                      <th className="px-4 py-2.5 font-medium">Updated</th>
-                      <th className="px-4 py-2.5 font-medium">Diff</th>
-                      <th className="px-4 py-2.5 font-medium">Source</th>
-                      <th className="px-4 py-2.5 font-medium">Status</th>
-                      <th className="px-4 py-2.5" />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {repoPrs.map((pr) => (
-                      <tr
-                        key={`${pr.repo}#${pr.number}`}
-                        className="border-b border-zinc-100 last:border-0 hover:bg-zinc-50 dark:border-zinc-900 dark:hover:bg-zinc-900/50"
-                      >
-                        <td className="px-4 py-3 align-top">
-                          <input
-                            type="checkbox"
-                            checked={selectedForBatch.has(prKey(pr))}
-                            onChange={() => toggleSelectForBatch(pr)}
-                            title="Select for batch review"
-                            className="h-3.5 w-3.5 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500 dark:border-zinc-600"
-                          />
-                        </td>
-                        <td className="px-4 py-3 align-top">
-                          <a
-                            href={pr.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 font-medium text-zinc-900 hover:text-indigo-600 dark:text-zinc-100 dark:hover:text-indigo-400"
-                          >
-                            #{pr.number}
-                            <ExternalLink size={12} className="text-zinc-400" />
-                          </a>
-                          <div className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{pr.title}</div>
-                        </td>
-                        <td className="px-4 py-3 align-top text-zinc-600 dark:text-zinc-400">{pr.author}</td>
-                        <td className="px-4 py-3 align-top text-zinc-600 dark:text-zinc-400">
-                          {new Date(pr.updatedAt).toLocaleDateString()}
-                        </td>
-                        <td className="px-4 py-3 align-top">
-                          <DiffStat additions={pr.additions} deletions={pr.deletions} />
-                        </td>
-                        <td className="px-4 py-3 align-top">
-                          <Badge variant={pr.source}>{pr.source}</Badge>
-                        </td>
-                        <td className="px-4 py-3 align-top">
-                          <Badge variant={pr.status}>{pr.status}</Badge>
-                        </td>
-                        <td className="px-4 py-3 align-top">
-                          <div className="flex items-center justify-end gap-1 whitespace-nowrap">
-                            <Button
-                              variant="ghost"
-                              onClick={() => {
-                                const [prOwner, prRepo] = pr.repo.split("/");
-                                navigate(`/review/${prOwner}/${prRepo}/${pr.number}`);
-                              }}
-                            >
-                              Review
-                            </Button>
-                            {pr.source === "manual" && (
-                              <Button variant="danger" onClick={() => handleRemove(pr)} title="Remove">
-                                <Trash2 size={14} />
-                              </Button>
-                            )}
-                          </div>
-                        </td>
+              <div className={`collapsible ${collapsed ? "" : "open"}`}>
+                <div>
+                  <table className="w-full border-collapse text-sm">
+                    <thead>
+                      <tr className="border-b border-hairline text-left text-[10px] font-bold tracking-[0.12em] text-faint uppercase">
+                        <th className="w-10 py-2.5 pl-4" />
+                        <th className="px-3 py-2.5 font-bold">Pull request</th>
+                        <th className="px-3 py-2.5 font-bold">Author</th>
+                        <th className="px-3 py-2.5 font-bold">Updated</th>
+                        <th className="px-3 py-2.5 font-bold">Diff</th>
+                        <th className="px-3 py-2.5 font-bold">Source</th>
+                        <th className="px-3 py-2.5 font-bold">Status</th>
+                        <th className="py-2.5 pr-4" />
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
+                    </thead>
+                    <tbody>
+                      {repoPrs.map((pr) => {
+                        const selected = selectedForBatch.has(prKey(pr));
+                        return (
+                          <tr
+                            key={prKey(pr)}
+                            className={`group relative border-b border-hairline transition-colors duration-200 last:border-0 hover:bg-surface-2/60 ${
+                              selected ? "bg-brand/5" : ""
+                            }`}
+                          >
+                            <td className="py-3 pl-4 align-top">
+                              {/* Selection rail doubles as the row's hover accent. */}
+                              <span
+                                aria-hidden
+                                className={`absolute inset-y-0 left-0 w-[3px] bg-linear-to-b from-brand-2 to-brand-3 transition-transform duration-300 ${
+                                  selected ? "scale-y-100" : "scale-y-0 group-hover:scale-y-100"
+                                }`}
+                              />
+                              <input
+                                type="checkbox"
+                                checked={selected}
+                                onChange={() => toggleSelectForBatch(pr)}
+                                title="Select for batch review"
+                                className="size-3.5 accent-[var(--brand)]"
+                              />
+                            </td>
+                            <td className="max-w-md px-3 py-3 align-top">
+                              <a
+                                href={pr.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-1 font-semibold text-ink transition-colors hover:text-brand"
+                              >
+                                #{pr.number}
+                                <ExternalLink size={11} className="text-faint" />
+                              </a>
+                              <div className="mt-0.5 truncate text-xs text-muted">{pr.title}</div>
+                            </td>
+                            <td className="px-3 py-3 align-top text-xs text-muted">{pr.author}</td>
+                            <td
+                              className="px-3 py-3 align-top text-xs whitespace-nowrap text-muted"
+                              title={new Date(pr.updatedAt).toLocaleString()}
+                            >
+                              {relativeTime(pr.updatedAt)}
+                            </td>
+                            <td className="px-3 py-3 align-top">
+                              <DiffStat additions={pr.additions} deletions={pr.deletions} />
+                            </td>
+                            <td className="px-3 py-3 align-top">
+                              <Badge variant={pr.source}>{pr.source}</Badge>
+                            </td>
+                            <td className="px-3 py-3 align-top">
+                              <Badge variant={pr.status}>{pr.status}</Badge>
+                            </td>
+                            <td className="py-3 pr-4 align-top">
+                              <div className="flex items-center justify-end gap-1 whitespace-nowrap">
+                                <Button
+                                  variant="secondary"
+                                  size="sm"
+                                  className="opacity-70 transition-opacity group-hover:opacity-100"
+                                  onClick={() => {
+                                    const [prOwner, prRepo] = pr.repo.split("/");
+                                    navigate(`/review/${prOwner}/${prRepo}/${pr.number}`);
+                                  }}
+                                >
+                                  Review
+                                  <ChevronRight size={13} />
+                                </Button>
+                                {pr.source === "manual" && (
+                                  <Button
+                                    variant="danger"
+                                    size="sm"
+                                    onClick={() => handleRemove(pr)}
+                                    title="Remove"
+                                  >
+                                    <Trash2 size={13} />
+                                  </Button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </Card>
           );
         })}

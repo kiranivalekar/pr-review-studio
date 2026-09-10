@@ -17,9 +17,9 @@ const STATUS_META = {
   },
   unchecked: {
     icon: CircleDashed,
-    iconClass: "text-zinc-400 dark:text-zinc-500",
+    iconClass: "text-faint",
     label: "Unchecked",
-    badgeClass: "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400",
+    badgeClass: "bg-surface-2 text-muted dark:text-faint",
   },
 };
 
@@ -37,12 +37,12 @@ function ChecklistRow({ item }) {
       <Icon size={18} className={`mt-0.5 shrink-0 ${meta.iconClass}`} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{item.label}</span>
+          <span className="text-sm font-medium text-ink">{item.label}</span>
           <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${meta.badgeClass}`}>
             {meta.label}
           </span>
         </div>
-        {item.note && <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{item.note}</p>}
+        {item.note && <p className="mt-0.5 text-xs text-muted">{item.note}</p>}
       </div>
     </div>
   );
@@ -56,7 +56,7 @@ export function PrChecklist({ review }) {
 
   if (items.length === 0) {
     return (
-      <Card className="p-8 text-center text-sm text-zinc-500 dark:text-zinc-400">
+      <Card className="p-8 text-center text-sm text-muted">
         No checklist recorded for this review (run before the PR checklist was added).
       </Card>
     );
@@ -76,16 +76,16 @@ export function PrChecklist({ review }) {
 
   return (
     <Card className="overflow-hidden">
-      <div className="flex items-center justify-between border-b border-zinc-100 px-4 py-3 dark:border-zinc-800">
-        <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">PR checklist</h2>
-        <span className="text-xs text-zinc-500 dark:text-zinc-400">
+      <div className="flex items-center justify-between border-b border-hairline px-4 py-3">
+        <h2 className="text-sm font-semibold text-ink">PR checklist</h2>
+        <span className="text-xs text-muted">
           {applicable.length > 0 ? `${passCount}/${applicable.length} passed` : "nothing applicable"}
           {warningCount > 0 ? ` · ${warningCount} warning${warningCount === 1 ? "" : "s"}` : ""}
         </span>
       </div>
       {groups.map(({ group, items: groupItems }) => (
-        <div key={group} className="divide-y divide-zinc-100 dark:divide-zinc-800">
-          <div className="bg-zinc-50 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:bg-zinc-800/50 dark:text-zinc-400">
+        <div key={group} className="divide-y divide-hairline">
+          <div className="bg-surface-2 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted dark:text-faint">
             {GROUP_LABEL[group] || group}
           </div>
           {groupItems.map((item) => (

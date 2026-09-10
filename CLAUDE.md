@@ -8,12 +8,20 @@ Phases 1-5v1 done: `client/` (React + Vite) and `server/` (Express) as npm
 workspaces. PR list (assigned + manual) and status now persist to
 `data/db.json` via `server/src/db.js`, wired through `/api/prs` and
 `/api/added-prs`. Dashboard and the Reviews-history screen (and
-`GET /api/dashboard/stats`) were removed entirely, by request — this is now a
-single-screen app: Assigned PRs at `/`, plus the per-PR Review screen.
-`client` UI runs on Tailwind v4 with a small primitives library in
-`client/src/components/ui/` (`Card`, `Button`, `Badge`, `Input`) — prefer
-reusing these over ad hoc classes when building new screens (`StatTile` was
-removed along with Dashboard, its only consumer). `GET /api/prs`'s underlying
+`GET /api/dashboard/stats`) were removed entirely, by request. Screens now:
+a marketing-style **Home** landing page at `/`, the review queue at `/prs`,
+and the per-PR Review screen. (Home is *not* the removed Dashboard coming
+back — it's a landing page whose CTA opens the queue, added by explicit
+request; it shows no per-PR stats table.) `client` UI runs on Tailwind v4
+over a **semantic design-token system** in `client/src/index.css` — never
+write `zinc-*`/`indigo-*` classes, use the tokens (`bg-surface`, `text-ink`,
+`text-muted`, `text-faint`, `border-hairline`, `bg-brand`, `bg-add-bg`, …),
+which are theme-aware, so a `dark:` variant of a token class is redundant.
+Primitives live in `client/src/components/ui/` (`Card`, `Button`, `Badge`,
+`Input`, `Textarea`, `Segmented`, `Skeleton`, `PageHeader`, `EmptyState`) —
+prefer reusing these over ad hoc classes when building new screens
+(`StatTile` was removed along with Dashboard, its only consumer).
+`GET /api/prs`'s underlying
 GitHub search moved from `assignee:` to `review-requested:` — the two are
 very different sets on this org (2 PRs vs. 97), so refreshing each match's
 full PR data went from a non-issue to a real bottleneck; `mapWithConcurrency`
@@ -91,7 +99,7 @@ want to GitHub, and track review/comment status per PR over time.
 ## Architecture
 
 ```
-Local web UI (Assigned PRs · Review)
+Local web UI (Home · Review queue · Review)
         │
   Express backend
     │        │
@@ -100,29 +108,56 @@ Local web UI (Assigned PRs · Review)
   data/db.json (prs, reviews)
 ```
 
-Left-sidebar nav with one section (Assigned PRs); Review is opened per-PR via
-a row action, not a nav link. Dashboard and a Reviews-history screen existed
-earlier in the plan but were removed by explicit request — don't re-add
-either without being asked again, this was a deliberate scope cut, not an
-oversight.
+Two layouts (`App.jsx`): `/` renders **Home** full-bleed with its own floating
+`TopNav` and no sidebar; everything else renders inside `AppShell` (left
+sidebar + content). Sidebar nav has two entries (Home, Review queue); Review
+is opened per-PR via a row action, not a nav link. Dashboard and a
+Reviews-history screen existed earlier in the plan but were removed by
+explicit request — don't re-add either without being asked again, this was a
+deliberate scope cut, not an oversight.
+
+**Design system** (`client/src/index.css`): semantic tokens are declared as
+CSS custom properties on `:root` (light) and `.dark`, then exposed as Tailwind
+utilities through `@theme inline` — that indirection is what makes
+`bg-surface` follow the theme without a `dark:` variant. The same file holds
+every keyframe, the `--animate-*` theme keys that expose them as
+`animate-fade-up`-style utilities, the composable effect classes (`glass`,
+`text-gradient`, `ring-gradient`, `spotlight`, `shine`, `grid-bg`, `grain`,
+`reveal`, `skeleton`, `collapsible`, `lift`), and **one** global
+`prefers-reduced-motion` guard — don't add per-component reduced-motion
+handling in CSS, it's already covered there. JS-driven motion
+(`client/src/lib/useMotion.js`: `useCountUp`, `useTypewriter`, `useSpotlight`,
+`useScrolled`; `useReveal.js`) checks the media query itself, since CSS can't
+stop a `setTimeout` loop.
 
 **Folders:** `client/` (React + Vite, Vite dev server proxies `/api` to
 `:3011`) and `server/` (Express, ESM). Root `package.json` uses npm workspaces
 — run everything from the repo root, not from inside `client`/`server`
 directly, except for one-off single-side commands.
 
-**Assigned PRs** (`client/src/pages/AssignedPRs.jsx`) groups the flat PR list
-by repo into collapsible accordion sections (`groupByRepo()`, repo groups
-ordered by repo name descending, Z-A — by explicit request, not by recency).
-Expanded by default (`collapsedRepos` starts empty); local UI state with a
-"Collapse all"/"Expand all" toggle, not persisted. Each PR row now shows just
-`#N` since the repo is already the group header.
+**Home** (`client/src/pages/Home.jsx`) is the landing page: hero with a
+`Let's start reviewing PRs` CTA to `/prs`, a live stats strip, an animated
+product mock (`HeroPreview.jsx` — a looping fake review, deliberately using
+the real diff colours), then features / how-it-works / review-modes /
+closing-CTA sections. Its stats deliberately call only the **cheap local**
+endpoints (`/api/reviews`, `/api/usage`); the queue count is read from
+`prsCache` and shows `—` when cold, because `GET /api/prs` fans out to live
+GitHub calls (~7s) and a landing page must not spend that.
 
-Currently routed screens: `/` (Assigned PRs, fully wired) and
+**Assigned PRs** (`client/src/pages/AssignedPRs.jsx`, routed at `/prs`) groups
+the flat PR list by repo into collapsible accordion sections (`groupByRepo()`,
+repo groups ordered by repo name descending, Z-A — by explicit request, not by
+recency). Collapsed on first load only; local UI state with a "Collapse
+all"/"Expand all" toggle, not persisted. A search box and status filter narrow
+the list *before* grouping, and an active filter forces groups expanded (a
+collapsed group would hide the matches being searched for). Each PR row shows
+just `#N` since the repo is already the group header.
+
+Currently routed screens: `/` (Home), `/prs` (Assigned PRs, fully wired) and
 `/review/:owner/:repo/:number` (fully wired, including push to GitHub — see
-"Review screen" below). Only the Review screen's page wrapper skips the
-shared `max-w-5xl` reading width (`App.jsx` no longer imposes one globally)
-— a diff view needs the room.
+"Review screen" below). Anything else redirects to `/`. Only the Review
+screen's page wrapper skips the shared `max-w-6xl` reading width — a diff view
+needs the room.
 
 **Review screen** renders comments inline on the actual diff, GitHub-style,
 not as a flat list:
