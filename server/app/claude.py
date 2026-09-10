@@ -3,6 +3,10 @@ Full replacement for the PR-review module.
 
 Keeps the existing behavior but applies the main performance/cost changes:
 
+- Keeps the cached system prompt byte-identical across PRs: per-PR context
+  (dependency manifest, PHPStan config, linked PRs, curated files) rides in
+  the user turn instead of being concatenated onto the system prompt. See
+  _run_batch_review.
 - Caches the deep-mode static review prompt too.
 - Uses one shared Claude concurrency limiter, so the deep summary counts
   against the same concurrency budget.
@@ -21,6 +25,38 @@ One important caveat: a token budget cannot be a mathematically hard upper
 bound unless the CLI/API itself accepts a per-call max_tokens limit. The
 code below therefore treats the configured review budget as a scheduling
 budget, not a guaranteed billing ceiling.
+
+MEASURED COST CEILING — prompt caching does not work through the CLI.
+
+Verified empirically on this machine (claude-sonnet-5, `claude -p`):
+
+  - A call piping the single word "hi", with no review prompt at all, bills
+    ~14,700 cache-creation + ~3,289 cache-read tokens. That is the floor for
+    invoking the CLI at all.
+  - With --system-prompt-file, the floor drops to ~8,752 tokens of Claude
+    Code harness (agent scaffolding this workload never uses) on top of our
+    own ~3,554-token review prompt: ~71% of the cached prefix is overhead.
+  - Enabling --tools "Read,Grep,Glob" (deep mode) adds ~3,157 more tokens of
+    tool definitions per call.
+  - Critically: the CLI exposes only ONE reusable cache breakpoint, ~1,442
+    tokens into its own preamble. Our system prompt is cached in the SAME
+    block as the piped user turn, so a differing diff invalidates it. Three
+    calls sharing one identical system-prompt file but different diffs each
+    reported cacheCreate=8744 / cacheRead=1442.
+
+Net effect: every review call re-writes ~8.7k+ tokens to cache and never
+reads them back. Because cache creation bills at a premium over ordinary
+input (1.25x at the 5-minute TTL, 2x at the 1-hour TTL), the caching path
+costs MORE than sending the same tokens uncached — it is a penalty, not a
+saving, and no amount of prompt restructuring fixes it from inside the CLI.
+
+The actual fix is a transport change: call the Messages API directly with an
+explicit cache_control breakpoint placed after the system prompt and before
+the diff. That removes the ~8.7k/call harness entirely and makes the review
+prompt a genuine reusable prefix (read at 0.1x) while the varying diff bills
+as plain input. It conflicts with this project's "never use
+ANTHROPIC_API_KEY, shell out to the logged-in CLI" auth model (see
+CLAUDE.md), so it is a deliberate decision, not something to change quietly.
 """
 
 import asyncio
@@ -731,7 +767,7 @@ def _group_into_batches(
         current_tokens = 0
 
         for chunk in group:
-            tokens = _estimate_chunk_tokens(chunk)
+            tokens = _estimate_chunk_diff_tokens(chunk)
 
             if current and (
                 len(current) >= BATCH_MAX_FILES
@@ -795,14 +831,25 @@ async def _run_batch_review(
     # same context twice.
     static_prompt = f"{review_prompt}{BATCH_INPUT_ADDENDUM}{frontend_addendum}{backend_addendum}{tools_addendum}"
 
-    if cwd:
-        context_text = manifest_addendum
-    else:
-        # Diff/curated mode has no repository tools, so all PR-specific
-        # context needs to be included in the cached prompt. This keeps it
-        # reusable across batches of the same variant.
-        static_prompt = f"{static_prompt}{manifest_addendum}{linked_curated_addendum}"
-        context_text = ""
+    # PR-specific context (dependency manifest, PHPStan config, linked PRs,
+    # curated files) goes in the USER turn — never appended to static_prompt.
+    #
+    # This keeps static_prompt byte-identical across PRs: at most 3 distinct
+    # system prompts per mode (frontend / backend / asset) for the life of
+    # the process, instead of a fresh one per PR.
+    #
+    # Be clear about what this does and does not buy TODAY: through the
+    # `claude` CLI it is cost-neutral, because the CLI caches the system
+    # prompt in the same block as the piped user turn, so the varying diff
+    # invalidates it either way (see the module docstring for the measured
+    # numbers). What it does buy now is that _system_prompt_file_for() stops
+    # writing a new temp file for every PR forever. What it buys later is the
+    # actual saving: a stable system prompt is the precondition for putting a
+    # real cache_control breakpoint after it once reviews move to the
+    # Messages API. Do not re-inline per-PR context here.
+    context_text = (
+        manifest_addendum if cwd else f"{manifest_addendum}{linked_curated_addendum}"
+    )
 
     labels = [_batch_file_label(chunk) for chunk in batch]
     stdin_text = "\n\n".join(
@@ -847,19 +894,22 @@ async def _run_summary(
     curated_context: str | None,
 ) -> tuple[str, list[dict[str, str]], dict[str, float | int]]:
     # Summary still receives the full diff because it is explicitly
-    # responsible for cross-file reasoning. The prompt itself is stable and
-    # therefore cached.
-    prompt = (
-        f"{SUMMARY_PROMPT}"
-        f"{_linked_pr_addendum(linked_context)}"
-        f"{_curated_context_addendum(curated_context)}"
-    )
-
+    # responsible for cross-file reasoning.
+    #
+    # SUMMARY_PROMPT is passed alone so the cached system prompt stays
+    # byte-identical across every review; the per-PR linked/curated context
+    # rides in the user turn instead. Appending it here used to give the
+    # summary call a fresh cache key on every single PR — see the note in
+    # _run_batch_review for the measured cost of that.
     parsed, usage = await _run_claude_call(
-        prompt,
+        SUMMARY_PROMPT,
         diff_text,
         SUMMARY_SCHEMA_JSON,
         use_system_prompt=True,
+        context_text=(
+            f"{_linked_pr_addendum(linked_context)}"
+            f"{_curated_context_addendum(curated_context)}"
+        ),
     )
 
     return parsed["summary"], parsed.get("checklist") or [], usage
@@ -917,23 +967,41 @@ _ESTIMATE_CHARS_PER_TOKEN = estimate_chars_per_token()
 _ESTIMATE_RESERVE_TOKENS = estimate_reserve_tokens()
 
 
-def _estimate_chunk_tokens(chunk: dict[str, Any]) -> int:
+def _estimate_chunk_diff_tokens(chunk: dict[str, Any]) -> int:
     """
-    Conservative token estimate used only for scheduling.
-
-    This does NOT replace actual usage accounting. It prevents an obviously
-    oversized batch from being launched when very little budget remains.
+    Estimated size of ONE file's diff, in tokens. No answer reserve.
 
     The chars-per-token ratio (estimateCharsPerToken, review_config.json) is
     intentionally conservative enough for source code while remaining cheap.
     """
     text = chunk.get("text") or ""
-    estimated_diff_tokens = max(256, len(text) // _ESTIMATE_CHARS_PER_TOKEN)
+    return max(256, len(text) // _ESTIMATE_CHARS_PER_TOKEN)
 
-    # Reserve room for the model's answer/tool activity (estimateReserveTokens).
-    # This is intentionally not a precise prediction; the actual usage is
-    # still collected after every call.
-    return estimated_diff_tokens + _ESTIMATE_RESERVE_TOKENS
+
+def _estimate_batch_tokens(batch: list[dict[str, Any]]) -> int:
+    """
+    Conservative token estimate for one Claude CALL, used only for scheduling.
+
+    This does NOT replace actual usage accounting. It prevents an obviously
+    oversized batch from being launched when very little budget remains.
+
+    estimateReserveTokens is added ONCE per batch, not once per file: it
+    reserves room for the model's answer/tool activity for this call, and a
+    call produces one answer no matter how many files it covers.
+
+    Getting that wrong was expensive. The reserve used to be baked into the
+    per-chunk estimate, so it was multiplied by the file count and charged
+    against batchMaxDiffTokens — a knob whose name and docs say it measures
+    *diff* size. With the defaults (4,000 reserve, 20,000 cap) that capped a
+    batch at 4 files regardless of how small they were, making batchMaxFiles
+    (7) dead config and forcing ~75% more calls than intended. Each extra
+    call costs a full ~10,186-token fixed overhead (see module docstring),
+    which dwarfs anything the reserve was protecting against.
+    """
+    return (
+        sum(_estimate_chunk_diff_tokens(chunk) for chunk in batch)
+        + _ESTIMATE_RESERVE_TOKENS
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -976,9 +1044,6 @@ async def run_review(
 
     indexed_batches = list(enumerate(batches))
 
-    def _estimate_batch_tokens(batch: list[dict[str, Any]]) -> int:
-        return sum(_estimate_chunk_tokens(chunk) for chunk in batch)
-
     async def review_one(item: tuple[int, list[dict[str, Any]]], _local_i: int) -> None:
         i, batch = item
 
@@ -1002,15 +1067,24 @@ async def run_review(
     # Diff/curated prompt-cache priming
     # ------------------------------------------------------------------
     #
-    # We still prime each static-prompt variant once, because concurrent
-    # cache creation for the same system-prompt file can waste tokens.
-    # Batching already means most variants produce a single batch, but a
-    # variant with enough files to split across multiple batches would
-    # otherwise race two batches' cache-creation calls against each other.
+    # WARNING — measured to buy nothing through the `claude` CLI. Verified on
+    # this machine: the CLI exposes only ONE stable cache breakpoint, ~1,442
+    # tokens into its own preamble. Everything after it — the rest of the
+    # Claude Code harness, our --system-prompt-file content, AND the piped
+    # user turn — is cached as a single block, so a differing diff
+    # invalidates the system prompt too. Three calls sharing one identical
+    # system-prompt file but different diffs each reported
+    # cacheCreate=8744 / cacheRead=1442: the primed entry is never read back.
     #
-    # The important change is that primers are no longer treated as a
-    # separate full review phase. Each primer is submitted through the same
-    # global semaphore.
+    # Priming is therefore latency-only overhead here (it serializes one
+    # batch ahead of the rest for no cache benefit). It is left in place, and
+    # deliberately NOT extended to deep mode, because it becomes correct and
+    # necessary the moment reviews move off the CLI onto the Messages API
+    # with an explicit cache_control breakpoint after the system prompt —
+    # which is where the real saving lives. See the module docstring.
+    #
+    # Primers are not a separate review phase: each one is a real batch
+    # review whose findings are kept, submitted through the same semaphore.
     #
     # We also skip priming if there is no budget available.
 
